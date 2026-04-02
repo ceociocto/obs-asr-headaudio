@@ -111,6 +111,150 @@
       transform: none;
       box-shadow: none;
     }
+    .voice-control {
+      border-top: 1px solid #444;
+      padding-top: 12px;
+      margin-top: 8px;
+    }
+    #listen-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #444;
+      display: inline-block;
+      margin-right: 8px;
+      transition: all 0.3s;
+    }
+    #listen-indicator.listening {
+      background: #48bb78;
+      box-shadow: 0 0 10px #48bb78;
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    #listen-status {
+      font-size: 11px;
+      color: #aaa;
+      margin-top: 4px;
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #aaa;
+    }
+    .checkbox-row input[type="checkbox"] {
+      accent-color: #667eea;
+    }
+
+    /* Mini status bar for auto mode */
+    #mini-status-bar {
+      display: none;
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      z-index: 20;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(10px);
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 11px;
+      color: #ccc;
+      flex-direction: column;
+      gap: 8px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+      min-width: 180px;
+    }
+    #mini-status-bar.visible {
+      display: flex;
+    }
+    .mini-status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      justify-content: space-between;
+    }
+    .mini-status-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .mini-label {
+      color: #888;
+      font-size: 10px;
+      text-transform: uppercase;
+      min-width: 50px;
+    }
+    .mini-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #444;
+      flex-shrink: 0;
+    }
+    .mini-dot.active {
+      background: #48bb78;
+      box-shadow: 0 0 8px #48bb78;
+    }
+    .mini-dot.speaking {
+      background: #667eea;
+      box-shadow: 0 0 8px #667eea;
+      animation: speaking-pulse 0.5s infinite;
+    }
+    .mini-dot.error {
+      background: #f56565;
+      box-shadow: 0 0 8px #f56565;
+    }
+    @keyframes speaking-pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.3); }
+    }
+    .mini-text {
+      color: #aaa;
+      font-size: 11px;
+    }
+    .mini-text.active {
+      color: #48bb78;
+    }
+    .mini-text.speaking {
+      color: #667eea;
+    }
+    .mini-text.error {
+      color: #f56565;
+    }
+    .mini-timing {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding-top: 4px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+    }
+    .mini-timing-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .mini-timing-label {
+      color: #666;
+      font-size: 10px;
+    }
+    .mini-timing-value {
+      color: #888;
+      font-size: 10px;
+      font-family: monospace;
+    }
+    .mini-timing-value.highlight {
+      color: #667eea;
+    }
+    .mini-divider {
+      width: 100%;
+      height: 1px;
+      background: rgba(255,255,255,0.1);
+      margin: 4px 0;
+    }
   </style>
 
   <script type="importmap">
@@ -147,7 +291,7 @@
 
     // Configuration
     const config = {
-      apiKey: "",  // Please enter your API key in the UI
+      apiKey: "26f5fa672b79404ab0bf6705533a0889.HBILFzghZiy1a7VB",  // Please enter your API key in the UI
       model: "glm-tts",
       voice: "female",
       speed: 1.0,
@@ -160,6 +304,107 @@
 
     // Audio source
     let currentSource = null;
+
+    // Voice recognition
+    let recognition = null;
+    let isListening = false;
+    const WAKE_WORD = "siri";
+
+    // Auto mode (from URL parameter)
+    let autoMode = false;
+
+    // Mini status bar state
+    let serviceOk = true;
+
+    // Timing tracking
+    let timingData = {
+      wakeTime: null,
+      ttsStartTime: null,
+      ttsEndTime: null,
+      audioDuration: null
+    };
+
+    /**
+    * Update mini status bar
+    */
+    function updateMiniStatus() {
+      if (!el["mini-status-bar"]) return;
+
+      // Service status
+      const serviceDot = el["mini-service-dot"];
+      const serviceText = el["mini-service-text"];
+      if (serviceDot && serviceText) {
+        serviceDot.className = `mini-dot ${serviceOk ? 'active' : 'error'}`;
+        serviceText.textContent = serviceOk ? '在线' : '离线';
+      }
+
+      // Listen status
+      const listenDot = el["mini-listen-dot"];
+      const listenText = el["mini-listen-text"];
+      if (listenDot && listenText) {
+        listenDot.className = `mini-dot ${isListening ? 'active' : ''}`;
+        listenText.textContent = isListening ? '监听中' : '待机';
+      }
+
+      // Speak status
+      const speakDot = el["mini-speak-dot"];
+      const speakText = el["mini-speak-text"];
+      if (speakDot && speakText) {
+        const isSpeaking = currentSource !== null;
+        speakDot.className = `mini-dot ${isSpeaking ? 'speaking' : ''}`;
+        speakText.textContent = isSpeaking ? '说话中' : '就绪';
+      }
+    }
+
+    /**
+    * Update mini message
+    */
+    function updateMiniMessage(message) {
+      if (el["mini-message"]) {
+        el["mini-message"].textContent = message || '-';
+      }
+    }
+
+    /**
+    * Format timing value
+    */
+    function formatTiming(ms) {
+      if (ms === null || ms === undefined) return '-';
+      if (ms < 1000) return `${Math.round(ms)}ms`;
+      return `${(ms / 1000).toFixed(1)}s`;
+    }
+
+    /**
+    * Update timing display
+    */
+    function updateTimingDisplay() {
+      if (!el["timing-wake"]) return;
+
+      el["timing-wake"].textContent = formatTiming(timingData.wakeTime);
+      el["timing-tts"].textContent = formatTiming(timingData.ttsEndTime && timingData.ttsStartTime
+        ? timingData.ttsEndTime - timingData.ttsStartTime
+        : null);
+      el["timing-audio"].textContent = formatTiming(timingData.audioDuration);
+
+      const total = timingData.wakeTime &&
+                    timingData.ttsEndTime && timingData.ttsStartTime
+        ? timingData.wakeTime + (timingData.ttsEndTime - timingData.ttsStartTime)
+        : null;
+      el["timing-total"].textContent = formatTiming(total);
+    }
+
+    /**
+    * Reset timing for new interaction
+    */
+    function resetTiming() {
+      timingData = {
+        wakeTime: null,
+        ttsStartTime: null,
+        ttsEndTime: null,
+        audioDuration: null
+      };
+      updateTimingDisplay();
+    }
 
     /**
     * Wrap a promise with a timeout
@@ -234,8 +479,9 @@
       headaudio.onended = () => {
         lastEnded = Date.now();
         head.setMood("neutral");
-        el["speak-btn"].disabled = false;
+        if (el["speak-btn"]) el["speak-btn"].disabled = false;
         hideStatus();
+        updateMiniStatus();
       };
 
       headaudio.onstarted = () => {
@@ -245,6 +491,7 @@
           head.speakWithHands();
         }
         head.setMood("happy");
+        updateMiniStatus();
       };
     }
 
@@ -265,18 +512,20 @@
         if (info.hasOwnProperty("error")) {
           s += " ERROR:<br>&gt; " + info.error.replaceAll("\n", "<br>&gt; ");
         }
-        el.info.innerHTML = s;
+        if (el.info) el.info.innerHTML = s;
       };
 
       try {
-        el["speak-btn"].disabled = true;
-        el.info.style.display = "block";
-        el.info.textContent = "Loading...";
+        if (el["speak-btn"]) el["speak-btn"].disabled = true;
+        if (el.info) {
+          el.info.style.display = "block";
+          el.info.textContent = "Loading...";
+        }
 
         await head.showAvatar(avatar, updateInfo.bind(null, "head"));
 
-        el.info.style.display = "none";
-        el["speak-btn"].disabled = false;
+        if (el.info) el.info.style.display = "none";
+        if (el["speak-btn"]) el["speak-btn"].disabled = false;
       } catch (error) {
         console.log(error);
         info.error = error.message?.slice() || "Unknown error.";
@@ -321,8 +570,14 @@
         return;
       }
 
-      el["speak-btn"].disabled = true;
+      if (el["speak-btn"]) el["speak-btn"].disabled = true;
       showStatus("loading", "正在生成语音...");
+      updateMiniStatus();
+
+      // Reset timing for new interaction
+      resetTiming();
+      timingData.wakeTime = timingData.wakeTime || 0;
+      timingData.ttsStartTime = performance.now();
 
       try {
         // Stop any current audio
@@ -334,10 +589,17 @@
 
         // Get audio from GLM TTS
         const audioBuffer = await callGLMTTS(text);
+        timingData.ttsEndTime = performance.now();
+        updateTimingDisplay();
+
         showStatus("success", "正在播放...");
+        serviceOk = true;
+        updateMiniStatus();
 
         // Decode and play
         const decodedBuffer = await head.audioCtx.decodeAudioData(audioBuffer);
+        timingData.audioDuration = decodedBuffer.duration * 1000; // Convert to ms
+        updateTimingDisplay();
 
         // Create and connect source
         currentSource = head.audioCtx.createBufferSource();
@@ -346,6 +608,7 @@
 
         // Start lip-sync
         headaudio.start();
+        updateMiniStatus();
 
         // Start playback
         currentSource.start(0);
@@ -355,14 +618,130 @@
           currentSource = null;
           headaudio.stop();
           hideStatus();
-          el["speak-btn"].disabled = false;
+          if (el["speak-btn"]) el["speak-btn"].disabled = false;
+          updateMiniStatus();
         };
 
       } catch (error) {
         console.error("Speech error:", error);
         showStatus("error", `错误: ${error.message}`);
-        el["speak-btn"].disabled = false;
+        serviceOk = error.message.includes("401") || error.message.includes("403") ? false : true;
+        if (el["speak-btn"]) el["speak-btn"].disabled = false;
         headaudio.stop();
+        updateMiniStatus();
+        updateTimingDisplay();
+      }
+    }
+
+    /**
+    * Get URL parameter
+    */
+    function getUrlParam(name) {
+      const params = new URLSearchParams(window.location.search);
+      return params.get(name);
+    }
+
+    /**
+    * Initialize speech recognition
+    */
+    function initSpeechRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+      if (!SpeechRecognition) {
+        showStatus("error", "浏览器不支持语音识别");
+        return false;
+      }
+
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = "en-US";
+
+      recognition.onstart = () => {
+        isListening = true;
+        recognition._startTime = Date.now();
+        el["listen-indicator"]?.classList.add("listening");
+        if (el["listen-status"]) el["listen-status"].textContent = "正在监听...";
+        updateMiniStatus();
+      };
+
+      recognition.onend = () => {
+        isListening = false;
+        el["listen-indicator"]?.classList.remove("listening");
+        if (el["listen-status"]) el["listen-status"].textContent = "已停止";
+        updateMiniStatus();
+        // Auto restart if in auto mode or continuous listening is enabled
+        if (autoMode || el["auto-listen"]?.checked) {
+          setTimeout(() => {
+            try { recognition.start(); } catch(e) {}
+          }, 500);
+        }
+      };
+
+      recognition.onresult = (event) => {
+        const last = event.results.length - 1;
+        const result = event.results[last];
+        const transcript = result[0].transcript.trim().toLowerCase();
+        console.log("Heard:", transcript);
+
+        // Check for wake word
+        if (transcript.startsWith(WAKE_WORD)) {
+          // Record wake time (time from recognition start to wake word detection)
+          if (recognition._startTime) {
+            timingData.wakeTime = Date.now() - recognition._startTime;
+          }
+
+          // Extract the message after the wake word
+          const message = transcript.substring(WAKE_WORD.length).trim();
+
+          if (message) {
+            if (el["listen-status"]) el["listen-status"].textContent = `收到: ${message}`;
+            updateMiniMessage(message);
+            updateTimingDisplay();
+            // Speak back the message
+            speak(message);
+          } else {
+            if (el["listen-status"]) el["listen-status"].textContent = "唤醒成功，请说话...";
+            updateMiniMessage("唤醒成功");
+          }
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.error("Speech recognition error:", event.error);
+        if (event.error === "not-allowed") {
+          showStatus("error", "请允许麦克风权限");
+          if (el["listen-btn"]) el["listen-btn"].disabled = false;
+          if (el["stop-listen-btn"]) el["stop-listen-btn"].disabled = true;
+        }
+      };
+
+      return true;
+    }
+
+    /**
+    * Toggle speech recognition
+    */
+    async function toggleListening() {
+      await resumeAudio();
+
+      if (!recognition) {
+        const initialized = initSpeechRecognition();
+        if (!initialized) return;
+      }
+
+      if (isListening) {
+        recognition.stop();
+        if (el["listen-btn"]) el["listen-btn"].disabled = false;
+        if (el["stop-listen-btn"]) el["stop-listen-btn"].disabled = true;
+      } else {
+        try {
+          recognition.start();
+          if (el["listen-btn"]) el["listen-btn"].disabled = true;
+          if (el["stop-listen-btn"]) el["stop-listen-btn"].disabled = false;
+        } catch(e) {
+          console.error("Failed to start recognition:", e);
+        }
       }
     }
 
@@ -370,24 +749,28 @@
     * Show/hide status
     */
     function showStatus(type, message) {
-      el["status"].className = `status ${type}`;
-      el["status"].textContent = message;
+      if (el["status"]) {
+        el["status"].className = `status ${type}`;
+        el["status"].textContent = message;
+      }
     }
 
     function hideStatus() {
-      el["status"].className = "status";
-      el["status"].textContent = "";
-      el["status"].style.display = "none";
+      if (el["status"]) {
+        el["status"].className = "status";
+        el["status"].textContent = "";
+        el["status"].style.display = "none";
+      }
     }
 
     /**
     * Save/Load config
     */
     function saveConfig() {
-      config.apiKey = el["api-key"].value;
-      config.voice = el.voice.value;
-      config.speed = parseFloat(el.speed.value);
-      config.volume = parseFloat(el.volume.value);
+      if (el["api-key"]) config.apiKey = el["api-key"].value;
+      if (el.voice) config.voice = el.voice.value;
+      if (el.speed) config.speed = parseFloat(el.speed.value);
+      if (el.volume) config.volume = parseFloat(el.volume.value);
 
       localStorage.setItem("glm_tts_config", JSON.stringify({
         apiKey: config.apiKey,
@@ -401,10 +784,10 @@
       const saved = localStorage.getItem("glm_tts_config");
       if (saved) {
         const parsed = JSON.parse(saved);
-        el["api-key"].value = parsed.apiKey || config.apiKey;
-        el.voice.value = parsed.voice || config.voice;
-        el.speed.value = parsed.speed || config.speed;
-        el.volume.value = parsed.volume || config.volume;
+        if (el["api-key"]) el["api-key"].value = parsed.apiKey || config.apiKey;
+        if (el.voice) el.voice.value = parsed.voice || config.voice;
+        if (el.speed) el.speed.value = parsed.speed || config.speed;
+        if (el.volume) el.volume.value = parsed.volume || config.volume;
 
         config.apiKey = parsed.apiKey || config.apiKey;
         config.voice = parsed.voice || config.voice;
@@ -413,8 +796,8 @@
       }
 
       // Update slider values
-      el["speed-value"].textContent = config.speed.toFixed(1);
-      el["volume-value"].textContent = config.volume.toFixed(1);
+      if (el["speed-value"]) el["speed-value"].textContent = config.speed.toFixed(1);
+      if (el["volume-value"]) el["volume-value"].textContent = config.volume.toFixed(1);
     }
 
     /**
@@ -433,58 +816,101 @@
       loadConfig();
 
       // Config change handlers
-      el["api-key"].addEventListener("change", saveConfig);
-      el.voice.addEventListener("change", saveConfig);
+      if (el["api-key"]) el["api-key"].addEventListener("change", saveConfig);
+      if (el.voice) el.voice.addEventListener("change", saveConfig);
 
-      el.speed.addEventListener("input", () => {
-        el["speed-value"].textContent = parseFloat(el.speed.value).toFixed(1);
-        saveConfig();
-      });
+      if (el.speed) {
+        el.speed.addEventListener("input", () => {
+          el["speed-value"].textContent = parseFloat(el.speed.value).toFixed(1);
+          saveConfig();
+        });
+      }
 
-      el.volume.addEventListener("input", () => {
-        el["volume-value"].textContent = parseFloat(el.volume.value).toFixed(1);
-        saveConfig();
-      });
+      if (el.volume) {
+        el.volume.addEventListener("input", () => {
+          el["volume-value"].textContent = parseFloat(el.volume.value).toFixed(1);
+          saveConfig();
+        });
+      }
 
       // Speak button
-      el["speak-btn"].addEventListener("click", async function() {
-        await resumeAudio();
-        speak(el["text-input"].value);
-      });
+      if (el["speak-btn"]) {
+        el["speak-btn"].addEventListener("click", async function() {
+          await resumeAudio();
+          speak(el["text-input"].value);
+        });
+      }
 
       // Enter key to speak
-      el["text-input"].addEventListener("keydown", function(e) {
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          if (!el["speak-btn"].disabled) {
-            el["speak-btn"].click();
+      if (el["text-input"]) {
+        el["text-input"].addEventListener("keydown", function(e) {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            if (!el["speak-btn"].disabled) {
+              el["speak-btn"].click();
+            }
           }
-        }
-      });
+        });
+      }
 
       // Quick phrases
       document.querySelectorAll(".phrase-btn").forEach(btn => {
         btn.addEventListener("click", function() {
-          el["text-input"].value = this.textContent;
+          if (el["text-input"]) el["text-input"].value = this.textContent;
           if (!el["speak-btn"].disabled) {
             el["speak-btn"].click();
           }
         });
       });
 
+      // Voice recognition buttons
+      if (el["listen-btn"]) el["listen-btn"].addEventListener("click", toggleListening);
+      if (el["stop-listen-btn"]) el["stop-listen-btn"].addEventListener("click", toggleListening);
+
       // Visibility change
       document.addEventListener("visibilitychange", async function() {
         if (document.visibilityState === "visible") {
           head.start();
           headaudio.start();
+          // Auto restart listening in auto mode
+          if (autoMode && !isListening && recognition) {
+            setTimeout(() => {
+              try { recognition.start(); } catch(e) {}
+            }, 500);
+          }
         } else {
           headaudio.stop();
           head.stop();
+          // Stop listening when hidden
+          if (isListening && recognition) {
+            recognition.stop();
+          }
         }
       });
 
+      // Stop listening when page is closed
+      window.addEventListener("beforeunload", function() {
+        if (recognition && isListening) {
+          recognition.stop();
+        }
+      });
+
+      // Check for auto mode from URL parameter
+      if (getUrlParam("mode") === "auto") {
+        autoMode = true;
+        el.controls.style.display = "none";
+        if (el["mini-status-bar"]) el["mini-status-bar"].classList.add("visible");
+        // Auto start listening after avatar loads
+      }
+
       // Load avatar
       await loadAvatar();
+
+      // Start auto listening if mode is auto
+      if (autoMode) {
+        await resumeAudio();
+        setTimeout(() => toggleListening(), 500);
+      }
     });
 
   </script>
@@ -546,6 +972,25 @@
         <button class="phrase-btn">很高兴见到你</button>
       </div>
     </div>
+
+    <div class="control-group voice-control">
+      <label>语音唤醒</label>
+      <div class="checkbox-row">
+        <input type="checkbox" id="auto-listen" checked />
+        <span>自动持续监听</span>
+      </div>
+      <div style="margin-top: 8px;">
+        <span id="listen-indicator"></span>
+        <span id="listen-status">未开始</span>
+      </div>
+      <div style="display: flex; gap: 8px; margin-top: 8px;">
+        <button id="listen-btn" style="flex: 1;">开始监听</button>
+        <button id="stop-listen-btn" style="flex: 1; background: #444;" disabled>停止</button>
+      </div>
+      <div style="font-size: 10px; color: #666; margin-top: 6px;">
+        说 "siri" 唤醒，然后说话
+      </div>
+    </div>
   </div>
 
   <div id="github">
@@ -554,6 +999,55 @@
         <path fill-rule="evenodd" clip-rule="evenodd" d="M48.854 0C21.839 0 0 22 0 49.217c0 21.756 13.993 40.172 33.405 46.69 2.427.49 3.316-1.059 3.316-2.362 0-1.141-.08-5.052-.08-9.127-13.59 2.934-16.42-5.867-16.42-5.867-2.184-5.704-5.42-7.17-5.42-7.17-4.448-3.015.324-3.015.324-3.015 4.934.326 7.523 5.052 7.523 5.052 4.367 7.496 11.404 5.378 14.235 4.074.404-3.178 1.699-5.378 3.074-6.6-10.839-1.141-22.243-5.378-22.243-24.283 0-5.378 1.94-9.778 5.014-13.2-.485-1.222-2.184-6.275.486-13.038 0 0 4.125-1.304 13.426 5.052a46.97 46.97 0 0 1 12.214-1.63c4.125 0 8.33.571 12.213 1.63 9.302-6.356 13.427-5.052 13.427-5.052 2.67 6.763.97 11.816.485 13.038 3.155 3.422 5.015 7.822 5.015 13.2 0 18.905-11.404 23.06-22.324 24.283 1.78 1.548 3.316 4.481 3.316 9.126 0 6.6-.08 11.897-.08 13.526 0 1.304.89 2.853 3.316 2.364 19.412-6.52 33.405-24.935 33.405-46.691C97.707 22 75.788 0 48.854 0z" fill="currentColor"/>
       </svg>
     </a>
+  </div>
+
+  <!-- Mini status bar for auto mode -->
+  <div id="mini-status-bar">
+    <div class="mini-status-row">
+      <span class="mini-label">服务</span>
+      <div class="mini-status-item">
+        <span class="mini-dot" id="mini-service-dot"></span>
+        <span class="mini-text" id="mini-service-text">-</span>
+      </div>
+    </div>
+    <div class="mini-status-row">
+      <span class="mini-label">监听</span>
+      <div class="mini-status-item">
+        <span class="mini-dot" id="mini-listen-dot"></span>
+        <span class="mini-text" id="mini-listen-text">-</span>
+      </div>
+    </div>
+    <div class="mini-status-row">
+      <span class="mini-label">说话</span>
+      <div class="mini-status-item">
+        <span class="mini-dot" id="mini-speak-dot"></span>
+        <span class="mini-text" id="mini-speak-text">-</span>
+      </div>
+    </div>
+    <div class="mini-divider"></div>
+    <div class="mini-status-row">
+      <span class="mini-label">消息</span>
+      <span class="mini-text" id="mini-message" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px;">-</span>
+    </div>
+    <div class="mini-divider"></div>
+    <div class="mini-timing">
+      <div class="mini-timing-item">
+        <span class="mini-timing-label">唤醒时间</span>
+        <span class="mini-timing-value" id="timing-wake">-</span>
+      </div>
+      <div class="mini-timing-item">
+        <span class="mini-timing-label">TTS生成</span>
+        <span class="mini-timing-value" id="timing-tts">-</span>
+      </div>
+      <div class="mini-timing-item">
+        <span class="mini-timing-label">音频时长</span>
+        <span class="mini-timing-value" id="timing-audio">-</span>
+      </div>
+      <div class="mini-timing-item">
+        <span class="mini-timing-label">总响应</span>
+        <span class="mini-timing-value highlight" id="timing-total">-</span>
+      </div>
+    </div>
   </div>
 </body>
 
