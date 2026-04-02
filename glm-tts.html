@@ -726,21 +726,29 @@
       await resumeAudio();
 
       if (!recognition) {
+        console.log("Initializing speech recognition...");
         const initialized = initSpeechRecognition();
-        if (!initialized) return;
+        if (!initialized) {
+          console.error("Speech recognition initialization failed");
+          return;
+        }
+        console.log("Speech recognition initialized");
       }
 
       if (isListening) {
+        console.log("Stopping recognition...");
         recognition.stop();
         if (el["listen-btn"]) el["listen-btn"].disabled = false;
         if (el["stop-listen-btn"]) el["stop-listen-btn"].disabled = true;
       } else {
         try {
+          console.log("Starting recognition...");
           recognition.start();
           if (el["listen-btn"]) el["listen-btn"].disabled = true;
           if (el["stop-listen-btn"]) el["stop-listen-btn"].disabled = false;
         } catch(e) {
           console.error("Failed to start recognition:", e);
+          showStatus("error", "启动监听失败: " + e.message);
         }
       }
     }
@@ -903,14 +911,34 @@
         // Auto start listening after avatar loads
       }
 
+      // Check for status bar visibility
+      if (getUrlParam("status") === "show" || getUrlParam("mode") === "auto") {
+        if (el["mini-status-bar"]) el["mini-status-bar"].classList.add("visible");
+      }
+
+      // Hide controls if requested (for OBS use)
+      if (getUrlParam("controls") === "hide" || getUrlParam("mode") === "auto") {
+        if (el.controls) el.controls.style.display = "none";
+      }
+
       // Load avatar
       await loadAvatar();
 
       // Start auto listening if mode is auto
       if (autoMode) {
+        console.log("Auto mode: starting audio and listening...");
         await resumeAudio();
-        setTimeout(() => toggleListening(), 500);
+        setTimeout(() => {
+          console.log("Auto mode: calling toggleListening");
+          toggleListening().catch(err => {
+            console.error("Auto mode: toggleListening failed", err);
+          });
+        }, 500);
       }
+
+      // Initial status update
+      updateMiniStatus();
+      updateTimingDisplay();
     });
 
   </script>
