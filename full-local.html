@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qwen3-ASR + Qwen3-TTS 完全离线版</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      min-height: 100vh;
+      color: white;
+    }
+    #debug-log {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      bottom: 80px;
+      background: rgba(0, 0, 0, 0.8);
+      border-radius: 12px;
+      padding: 15px;
+      font-family: monospace;
+      font-size: 12px;
+      overflow-y: auto;
+      z-index: 100;
+    }
+    .log-entry {
+      padding: 2px 0;
+      border-bottom: 1px solid #333;
+    }
+    .log-entry.info { color: #667eea; }
+    .log-entry.success { color: #48bb78; }
+    .log-entry.error { color: #f56565; }
+    .log-entry.warn { color: #ecc94b; }
+    #activate-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.95);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+      cursor: pointer;
+    }
+    #activate-overlay.hidden {
+      display: none;
+    }
+    #activate-overlay h1 {
+      font-size: 48px;
+      margin-bottom: 20px;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    #controls {
+      position: fixed;
+      bottom: 10px;
+      left: 10px;
+      right: 10px;
+      display: flex;
+      gap: 10px;
+      z-index: 150;
+      align-items: center;
+    }
+    #text-input {
+      flex: 1;
+      padding: 12px 16px;
+      border: none;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+      font-size: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    #text-input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    #text-input::placeholder {
+      color: rgba(255, 255, 255, 0.5);
+    }
+    .record-btn {
+      padding: 12px 24px;
+      border: none;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #f56565, #c0392b);
+      color: white;
+      font-size: 16px;
+      cursor: pointer;
+      font-weight: 600;
+      min-width: 120px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .record-btn.recording {
+      background: linear-gradient(135deg, #48bb78, #38a169);
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.8; }
+    }
+    .record-btn:hover:not(.recording) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(245, 101, 101, 0.4);
+    }
+    .speak-btn {
+      padding: 12px 24px;
+      border: none;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      font-size: 16px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .speak-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+    #status-bar {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      gap: 8px;
+      z-index: 150;
+    }
+    .status-item {
+      background: rgba(0, 0, 0, 0.6);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #444;
+    }
+    .status-dot.active {
+      background: #48bb78;
+      box-shadow: 0 0 8px #48bb78;
+    }
+    .status-dot.working {
+      background: #667eea;
+      animation: pulse 1s infinite;
+    }
+  </style>
+</head>
+<body>
+  <div id="debug-log"></div>
+
+  <div id="status-bar">
+    <div class="status-item">
+      <div class="status-dot" id="ws-dot"></div>
+      <span id="ws-status">连接中</span>
+    </div>
+    <div class="status-item">
+      <div class="status-dot" id="asr-dot"></div>
+      <span id="asr-status">ASR</span>
+    </div>
+    <div class="status-item">
+      <div class="status-dot" id="tts-dot"></div>
+      <span id="tts-status">TTS</span>
+    </div>
+  </div>
+
+  <div id="activate-overlay">
+    <h1>🎙️ Qwen3-ASR + Qwen3-TTS</h1>
+    <p>100% 离线语音助手</p>
+  </div>
+
+  <div id="controls">
+    <button id="record-btn" class="record-btn">
+      <span id="record-icon">🎤</span>
+      <span id="record-text">按住说话</span>
+    </button>
+    <input type="text" id="text-input" placeholder="输入文字或说话..." />
+    <button id="speak-btn" class="speak-btn">播放</button>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js/+esm",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+      "talkinghead": "https://cdn.jsdelivr.net/npm/@met4citizen/talkinghead@1.7/modules/talkinghead.mjs",
+      "headaudio": "./dist/headaudio.min.mjs"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import { TalkingHead } from "talkinghead";
+    import { HeadAudio } from "headaudio";
+
+    const logEl = document.getElementById('debug-log');
+    const overlay = document.getElementById('activate-overlay');
+    const recordBtn = document.getElementById('record-btn');
+    const recordIcon = document.getElementById('record-icon');
+    const recordText = document.getElementById('record-text');
+    const textInput = document.getElementById('text-input');
+    const speakBtn = document.getElementById('speak-btn');
+    const wsDot = document.getElementById('ws-dot');
+    const wsStatus = document.getElementById('ws-status');
+    const asrDot = document.getElementById('asr-dot');
+    const asrStatus = document.getElementById('asr-status');
+    const ttsDot = document.getElementById('tts-dot');
+    const ttsStatus = document.getElementById('tts-status');
+
+    function log(msg, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.appendChild(entry);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // 全局变量
+    let head = null;
+    let headaudio = null;
+    let ws = null;
+    let currentSource = null;
+    let isRecording = false;
+
+    // WebSocket 连接
+    function connectWebSocket() {
+      log('连接 WebSocket: ws://localhost:8765');
+
+      ws = new WebSocket('ws://localhost:8765');
+
+      ws.onopen = () => {
+        log('✓ WebSocket 已连接', 'success');
+        wsDot.classList.add('active');
+        wsStatus.textContent = '已连接';
+      };
+
+      ws.onclose = () => {
+        log('✗ WebSocket 连接关闭', 'error');
+        wsDot.classList.remove('active');
+        wsStatus.textContent = '未连接';
+        setTimeout(() => {
+          log('3秒后重连...', 'warn');
+          connectWebSocket();
+        }, 3000);
+      };
+
+      ws.onerror = () => {
+        log('✗ WebSocket 错误', 'error');
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.type === "connected") {
+            log(`✓ 服务器已连接`, 'success');
+            log(`  ASR: ${data.has_speech ? 'ON' : 'OFF'}`, 'info');
+            log(`  TTS: ${data.has_tts ? 'ON' : 'OFF'}`, 'info');
+          }
+          else if (data.type === "transcript") {
+            log(`🎤 识别到: "${data.text}"`, 'success');
+            textInput.value = data.text;
+          }
+          else if (data.type === "audio") {
+            log('🔊 收到 Qwen3-TTS 音频', 'success');
+            await playAudioFromServer(data.audio, data.sample_rate);
+          }
+          else if (data.type === "recording_status") {
+            isRecording = data.is_recording;
+            if (isRecording) {
+              recordBtn.classList.add('recording');
+              recordIcon.textContent = '⏹';
+              recordText.textContent = '松开结束';
+              asrDot.classList.add('working');
+              asrStatus.textContent = '录音中';
+            } else {
+              recordBtn.classList.remove('recording');
+              recordIcon.textContent = '🎤';
+              recordText.textContent = '按住说话';
+              asrDot.classList.remove('working');
+              asrStatus.textContent = '处理中...';
+            }
+          }
+
+        } catch (error) {
+          log(`消息解析错误: ${error.message}`, 'error');
+        }
+      };
+    }
+
+    // 播放服务器生成的音频
+    async function playAudioFromServer(audioB64, sampleRate) {
+      try {
+        const binaryString = atob(audioB64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        const audioBuffer = await head.audioCtx.decodeAudioData(bytes.buffer);
+
+        if (currentSource) {
+          try { currentSource.stop(); } catch (e) {}
+          currentSource = null;
+        }
+        headaudio.stop();
+
+        currentSource = head.audioCtx.createBufferSource();
+        currentSource.buffer = audioBuffer;
+        currentSource.connect(head.audioSpeechGainNode);
+
+        headaudio.start();
+        currentSource.start(0);
+
+        ttsDot.classList.add('working');
+        ttsStatus.textContent = '播放中';
+
+        currentSource.onended = () => {
+          currentSource = null;
+          headaudio.stop();
+          ttsDot.classList.remove('working');
+          ttsStatus.textContent = 'TTS';
+          log('✓ 播放完成', 'info');
+        };
+
+      } catch (error) {
+        log(`播放错误: ${error.message}`, 'error');
+      }
+    }
+
+    // 使用服务器 TTS 播放文字
+    function speakWithServerTTS(text) {
+      if (!text || !ws || ws.readyState !== WebSocket.OPEN) {
+        log('无法播放: WebSocket 未连接', 'error');
+        return;
+      }
+
+      log(`发送 TTS 请求: "${text}"`, 'info');
+      ttsDot.classList.add('working');
+      ttsStatus.textContent = '生成中';
+      ws.send(JSON.stringify({
+        type: "tts",
+        text: text,
+        voice: "Vivian",
+        speed: 1.0
+      }));
+    }
+
+    // 初始化 TalkingHead
+    function initHead() {
+      log('初始化虚拟头像...');
+
+      const avatarDiv = document.createElement('div');
+      avatarDiv.id = 'avatar';
+      avatarDiv.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 500px; height: 500px;';
+      document.body.appendChild(avatarDiv);
+
+      head = new TalkingHead(avatarDiv, {
+        ttsEndpoint: "N/A",
+        lipsyncModules: [],
+        cameraView: "upper",
+        mixerGainSpeech: 3,
+        cameraDistance: -0.9
+      });
+
+      window.head = head;
+      log('✓ 虚拟头像初始化完成', 'success');
+    }
+
+    // 初始化 HeadAudio
+    async function initHeadAudio() {
+      log('初始化口型同步...');
+
+      try {
+        const processor = "./dist/headworklet.min.mjs";
+        const model = "./dist/model-en-mixed.bin";
+
+        await head.audioCtx.audioWorklet.addModule(processor);
+        headaudio = new HeadAudio(head.audioCtx);
+
+        try {
+          await headaudio.loadModel(model);
+        } catch (error) {
+          log(`模型加载警告: ${error.message}`, 'warn');
+        }
+
+        head.audioSpeechGainNode.connect(headaudio);
+        head.audioSpeechGainNode.connect(head.audioCtx.destination);
+
+        headaudio.onvalue = (key, value) => {
+          if (head.mtAvatar[key]) {
+            Object.assign(head.mtAvatar[key], { newvalue: value, needsUpdate: true });
+          }
+        };
+
+        head.opt.update = headaudio.update.bind(headaudio);
+
+        headaudio.onended = () => {
+          head.setMood("neutral");
+        };
+
+        headaudio.onstarted = () => {
+          head.setMood("happy");
+        };
+
+        window.headaudio = headaudio;
+        log('✓ 口型同步初始化完成', 'success');
+
+      } catch (error) {
+        log(`✗ 初始化失败: ${error.message}`, 'error');
+      }
+    }
+
+    // 加载头像
+    async function loadAvatar() {
+      log('加载虚拟头像模型...');
+
+      const avatar = {
+        url: "./avatars/julia.glb",
+        body: "F",
+        avatarMood: "neutral"
+      };
+
+      try {
+        await head.showAvatar(avatar);
+        log('✓ 虚拟头像加载完成', 'success');
+      } catch (error) {
+        log(`✗ 头像加载失败: ${error.message}`, 'error');
+      }
+    }
+
+    // 激活
+    overlay.addEventListener('click', async function() {
+      log('=== 点击激活 ===', 'info');
+      overlay.classList.add('hidden');
+
+      try {
+        initHead();
+        await head.start();
+        log('✓ AudioContext 已启动', 'success');
+
+        connectWebSocket();
+
+        await initHeadAudio();
+
+        await loadAvatar();
+
+        log('=== 激活完成，100% 离线 ===', 'success');
+
+      } catch (error) {
+        log(`✗ 激活失败: ${error.message}`, 'error');
+      }
+    });
+
+    // 录音按钮（鼠标按下开始，松开结束）
+    recordBtn.addEventListener('mousedown', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      log('开始录音...', 'info');
+      ws.send(JSON.stringify({ type: "start_listening" }));
+    });
+
+    recordBtn.addEventListener('mouseup', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      log('停止录音，发送识别...', 'info');
+      ws.send(JSON.stringify({ type: "stop_listening" }));
+    });
+
+    // 触摸设备支持
+    recordBtn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      log('开始录音...', 'info');
+      ws.send(JSON.stringify({ type: "start_listening" }));
+    });
+
+    recordBtn.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      log('停止录音，发送识别...', 'info');
+      ws.send(JSON.stringify({ type: "stop_listing" }));
+    });
+
+    // 播放按钮
+    speakBtn.addEventListener('click', () => {
+      const text = textInput.value.trim();
+      if (text) {
+        speakWithServerTTS(text);
+      }
+    });
+
+    // 回车播放
+    textInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        speakBtn.click();
+      }
+    });
+
+    log('等待用户点击激活...', 'info');
+  </script>
+</body>
+</html>
