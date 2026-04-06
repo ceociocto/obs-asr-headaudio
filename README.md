@@ -45,6 +45,54 @@ chmod +x start_obs.sh
 
 脚本通过 `--use-fake-ui-for-media-stream` 等参数，让 OBS 内嵌浏览器面板跳过媒体权限弹窗和自动播放限制，TTS 音频可无需用户点击即播放。
 
+#### 3.1 OBS 音频配置（避免回声）
+
+在 OBS 中需正确配置音频监听模式，否则 TTS 播放的音频会通过麦克风回路产生回声。请按以下截图配置：
+
+<img src="assets/ScreenShot_obs_setting_avoid_echo.png" width="600" alt="OBS 音频配置 - 避免回声"/>
+
+**关键设置：**
+- 在 OBS 的 `高级音频属性` 中，将浏览器源的 **音频监听** 模式设置为仅监听（Monitor Only），不要选择「监听并输出（Monitor and Output）」
+- 确保麦克风源的音频监听设为关闭（None），避免麦克风采集的声音再次从扬声器输出形成回路
+- 如使用耳机，可适当放宽上述限制，但建议保持一致以获得最佳效果
+
+#### 3.2 macOS 音频路由配置（BlackHole）
+
+若需将系统音频（如 TTS 输出）同时路由到 OBS 和扬声器，推荐安装 [BlackHole](https://existential.audio/blackhole/) 虚拟音频驱动，配合 macOS 自带的「音频 MIDI 设置」创建多输出设备。
+
+**1) 安装 BlackHole**
+
+```bash
+# 推荐使用 Homebrew 安装
+brew install blackhole-16ch
+```
+
+**2) 创建多输出设备（Multi-Output Device）**
+
+打开「音频 MIDI 设置」（Audio MIDI Setup），点击左下角 `+` → 「创建多输出设备」，勾选：
+- 扬声器 / 耳机（物理输出）
+- BlackHole 16ch
+
+将此多输出设备重命名为 `Multi-Output`，然后将系统默认输出设为该设备。
+
+**3) 配置麦克风聚合（Aggregate Device）**
+
+<img src="assets/ScreenShot_midi_mic.png" width="600" alt="macOS 音频 MIDI 设置 - 麦克风聚合设备"/>
+
+创建聚合设备（Aggregate Device），勾选：
+- Mac 内置麦克风（或外接麦克风）
+- BlackHole 16ch
+
+这样 OBS 可以从该聚合设备采集到麦克风输入，同时 BlackHole 通道用于内部音频路由。
+
+**4) 系统音频输出配置**
+
+<img src="assets/ScreenShot_midi_audio.png" width="600" alt="macOS 音频 MIDI 设置 - 多输出设备"/>
+
+确保多输出设备中主设备（Master Device）设为物理扬声器/耳机，BlackHole 作为从设备。这样系统声音既能从扬声器听到，也能被 OBS 通过 BlackHole 采集到。
+
+> **提示：** 配置完成后，在 OBS 的音频设置中将麦克风输入选为刚创建的聚合设备，即可实现麦克风 + 系统音频的同时采集。
+
 #### 4. 启动后端服务
 
 ```bash

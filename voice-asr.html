@@ -271,6 +271,10 @@
       utter.lang = "zh-CN";
       utter.rate = 1.0;
 
+      // TTS播放期间暂停录音，防止回音被ASR重复识别
+      const wasMonitoring = monitoring;
+      if (monitoring) stopMonitoring();
+
       $tts.classList.add("busy");
       if (head) head.setMood("happy");
       startMouthAnim();
@@ -279,6 +283,8 @@
         $tts.classList.remove("busy");
         stopMouthAnim();
         if (head) head.setMood("neutral");
+        // TTS结束后恢复录音
+        if (wasMonitoring && ws?.readyState === 1) startMonitoring();
       };
       utter.onend = done;
       utter.onerror = done;
