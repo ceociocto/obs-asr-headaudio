@@ -89,7 +89,7 @@
   <div id="avatar"></div>
 
   <div id="bottombar">
-    <button class="btn" id="mic-btn">🎤 按住说话</button>
+    <button class="btn" id="mic-btn">⏹ 停止监测</button>
     <input id="input" placeholder="输入文字，回车播放..." />
     <button class="btn" id="speak-btn">播放</button>
   </div>
@@ -120,6 +120,7 @@
     // --- 全局 ---
     let head, headaudio, ws, currentSource;
     let micStream, micNode, pcmBuffers = [], micCtx;
+    let monitoring = false;
 
     // ========== TalkingHead + HeadAudio ==========
     async function init() {
@@ -170,12 +171,14 @@
       };
     }
 
-    // ========== 录音（原始 PCM）==========
-    async function startRecording() {
+    // ========== 录音（持续监测模式）==========
+    const SEND_INTERVAL = 3000; // 每3秒发送一次音频
+    let sendTimer = null;
+
+    async function startMonitoring() {
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
       });
-      // 用独立 AudioContext 采集，目标 16kHz
       micCtx = new AudioContext({ sampleRate: 16000 });
       const src = micCtx.createMediaStreamSource(micStream);
       const processor = micCtx.createScriptProcessor(4096, 1, 1);
@@ -185,40 +188,43 @@
         pcmBuffers.push(new Float32Array(pcm));
       };
       src.connect(processor);
-      processor.connect(micCtx.destination); // 必须连接才触发
-      // 保存引用以便停止
+      processor.connect(micCtx.destination);
       micNode = processor;
+
+      // 定时发送累积的音频
+      sendTimer = setInterval(sendAudio, SEND_INTERVAL);
+      monitoring = true;
+      $mic.textContent = "⏹ 停止监测";
+      $mic.classList.add("rec");
+      $asr.classList.add("on");
     }
 
-    function stopRecording() {
-      if (micNode) {
-        micNode.disconnect();
-        micNode = null;
-      }
-      if (micStream) {
-        micStream.getTracks().forEach(t => t.stop());
-        micStream = null;
-      }
-      if (micCtx) {
-        micCtx.close();
-        micCtx = null;
-      }
-      if (pcmBuffers.length === 0) return;
+    function stopMonitoring() {
+      if (sendTimer) { clearInterval(sendTimer); sendTimer = null; }
+      if (micNode) { micNode.disconnect(); micNode = null; }
+      if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+      if (micCtx) { micCtx.close(); micCtx = null; }
+      // 发送剩余数据
+      if (pcmBuffers.length > 0 && ws?.readyState === 1) sendAudio();
+      monitoring = false;
+      $mic.textContent = "🎤 开始监测";
+      $mic.classList.remove("rec");
+      $asr.classList.remove("on");
+    }
 
-      // 合并 PCM → Int16 → base64
+    function sendAudio() {
+      if (pcmBuffers.length === 0 || ws?.readyState !== 1) return;
       const totalLen = pcmBuffers.reduce((s, b) => s + b.length, 0);
       const merged = new Float32Array(totalLen);
       let offset = 0;
       for (const b of pcmBuffers) { merged.set(b, offset); offset += b.length; }
+      pcmBuffers = [];
 
-      // Float32 → Int16
       const i16 = new Int16Array(totalLen);
       for (let i = 0; i < totalLen; i++) {
         const s = Math.max(-1, Math.min(1, merged[i]));
         i16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
       }
-
-      // 转 base64
       const bytes = new Uint8Array(i16.buffer);
       let bin = "";
       for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
@@ -226,7 +232,6 @@
 
       ws.send(JSON.stringify({ type: "audio", data: b64, sampleRate: 16000 }));
       $asr.classList.add("busy");
-      pcmBuffers = [];
     }
 
     // ========== 口型动画（speechSynthesis 不经过 AudioContext，需手动驱动）==========
@@ -282,12 +287,11 @@
     }
 
     // ========== 事件 ==========
-    // 麦克风按钮
-    $mic.addEventListener("mousedown", () => { if (ws?.readyState === 1) { $mic.classList.add("rec"); startRecording(); } });
-    $mic.addEventListener("mouseup", () => { $mic.classList.remove("rec"); stopRecording(); });
-    $mic.addEventListener("mouseleave", () => { if ($mic.classList.contains("rec")) { $mic.classList.remove("rec"); stopRecording(); } });
-    $mic.addEventListener("touchstart", (e) => { e.preventDefault(); $mic.classList.add("rec"); startRecording(); });
-    $mic.addEventListener("touchend", (e) => { e.preventDefault(); $mic.classList.remove("rec"); stopRecording(); });
+    // 监测切换按钮
+    $mic.addEventListener("click", () => {
+      if (monitoring) stopMonitoring();
+      else if (ws?.readyState === 1) startMonitoring();
+    });
 
     // 播放按钮
     $speak.addEventListener("click", () => speak($input.value.trim()));
@@ -296,6 +300,10 @@
     // ========== 启动 ==========
     await init();
     connectWS();
+    // 等 WebSocket 连接后自动开始监测
+    const autoStart = setInterval(() => {
+      if (ws?.readyState === 1) { clearInterval(autoStart); startMonitoring(); }
+    }, 200);
   </script>
 </body>
 </html>

@@ -1,5 +1,100 @@
 # HeadAudio
 
+---
+
+### Quick Start / 快速开始
+
+Qwen3-ASR 离线语音识别 + Chrome TTS + 3D 虚拟头像口型同步，全部在本地运行。
+
+#### 前置条件
+
+- macOS (Apple Silicon)
+- [uv](https://docs.astral.sh/uv/) Python 包管理器
+- OBS Studio (macOS 版)
+
+#### 1. 安装依赖
+
+```bash
+uv sync
+```
+
+#### 2. 下载 Qwen3-ASR 模型
+
+ASR 后端使用 [Qwen3-ASR-1.7B-MLX-4bit](https://huggingface.co/) 模型（Apple Silicon MLX 4-bit 量化），需提前下载到本地：
+
+```bash
+# 安装 huggingface-cli（如未安装）
+uv pip install huggingface_hub
+
+# 下载模型（约 1GB）
+huggingface-cli download Qwen/Qwen3-ASR-1.7B-MLX-4bit --local-dir ~/.cache/huggingface/hub/Qwen3-ASR-1.7B-MLX-4bit
+```
+
+> 模型默认路径配置在 `qwen3_asr_wrapper.py` 的 `ASR_MODEL_PATH` 变量中，可按需修改。
+
+#### 3. 启动 OBS (释放浏览器媒体权限)
+
+OBS 需要以特殊参数启动，解除 Chrome 内核对自动播放和麦克风的限制：
+
+```bash
+chmod +x start_obs.sh
+./start_obs.sh
+```
+
+> 如果 OBS 已经在运行，先完全退出 (`Command+Q`) 再执行脚本。
+
+脚本通过 `--use-fake-ui-for-media-stream` 等参数，让 OBS 内嵌浏览器面板跳过媒体权限弹窗和自动播放限制，TTS 音频可无需用户点击即播放。
+
+#### 4. 启动后端服务
+
+```bash
+uv run python voice-asr-server.py
+```
+
+服务器监听 `ws://localhost:8765`，提供 Qwen3-ASR 离线语音识别。
+
+#### 5. 启动前端 (HTTP)
+
+```bash
+uv run python -m http.server 8000
+```
+
+浏览器打开 `http://localhost:8000/voice-asr.html`。
+
+> 必须通过 HTTP 服务访问，直接以 `file://` 打开会导致 WebSocket 和模块加载失败。
+
+#### 演示流程
+
+```
+终端 1: uv run python voice-asr-server.py   # ASR 识别服务
+终端 2: ./start_obs.sh                       # 启动 OBS (可选)
+终端 3: uv run python -m http.server 8000    # 前端 HTTP 服务
+浏览器:  http://localhost:8000/voice-asr.html
+```
+
+页面加载后，语音检测默认自动开启，对麦克风说话即可触发 ASR 识别 → Chrome TTS 朗读 → HeadAudio 驱动口型同步。点击麦克风按钮可切换检测开关状态。
+
+#### 技术架构
+
+```
+浏览器 (前端)                         Python (后端)
+┌─────────────┐    WebSocket    ┌──────────────────┐
+│ TalkingHead │◄──────────────►│ voice-asr-server │
+│  3D 头像     │   JSON/Base64  │   Qwen3-ASR      │
+│ HeadAudio   │                 │   (MLX GPU 加速)  │
+│  口型同步    │                 └──────────────────┘
+│ Chrome TTS  │
+│  语音合成    │
+└─────────────┘
+```
+
+- **HeadAudio**: 浏览器 AudioWorklet，实时分析音频 MFCC 特征 → 马氏距离分类 → 输出 Oculus viseme 口型参数
+- **TalkingHead**: Three.js 3D 头像渲染，接收 viseme 值驱动 blend shape
+- **Qwen3-ASR**: Apple Silicon MLX 加速的离线语音识别，浏览器录音经 WebSocket 发送至后端
+- **Chrome TTS**: 浏览器内置语音合成，将识别结果朗读出来
+
+---
+
 ### Introduction
 
 HeadAudio is an audio worklet node/processor for audio-driven,
