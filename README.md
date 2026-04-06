@@ -32,6 +32,17 @@ huggingface-cli download Qwen/Qwen3-ASR-1.7B-MLX-4bit --local-dir ~/.cache/huggi
 
 > 模型默认路径配置在 `qwen3_asr_wrapper.py` 的 `ASR_MODEL_PATH` 变量中，可按需修改。
 
+#### 2.1 下载 Parakeet-MLX 模型（英文 ASR 可选）
+
+如果使用 Parakeet 方案（低延迟英文识别），需额外下载 MLX 格式模型：
+
+```bash
+# 下载模型（约 2.5GB）
+huggingface-cli download mlx-community/parakeet-tdt-0.6b-v3
+```
+
+> 模型自动缓存到 `~/.cache/huggingface/hub/`，`parakeet_asr_server.py` 会自动加载。如网络不通，可手动指定本地路径。
+
 #### 3. 启动 OBS (释放浏览器媒体权限)
 
 OBS 需要以特殊参数启动，解除 Chrome 内核对自动播放和麦克风的限制：
@@ -140,6 +151,28 @@ uv run python -m http.server 8000
 - **TalkingHead**: Three.js 3D 头像渲染，接收 viseme 值驱动 blend shape
 - **Qwen3-ASR**: Apple Silicon MLX 加速的离线语音识别，浏览器录音经 WebSocket 发送至后端
 - **Chrome TTS**: 浏览器内置语音合成，将识别结果朗读出来
+
+#### ASR 后端切换
+
+项目提供两套独立的 ASR 后端，可随时切换：
+
+| | Qwen3-ASR (方案A) | Parakeet-MLX (方案B) |
+|---|---|---|
+| 启动服务 | `uv run python voice-asr-server.py` | `uv run python parakeet_asr_server.py` |
+| 前端页面 | `voice-asr.html` | `voice-asr-parakeet.html` |
+| WebSocket | `:8765` | `:8766` |
+| 适用语言 | 中文/多语言 (30语言+22方言) | 英文 (最佳) |
+| ASR 模型 | Qwen3-ASR-1.7B-MLX-4bit | Parakeet TDT 0.6B (BF16) |
+| 模型大小 | ~1.7GB | ~1.2GB |
+| 特点 | 多语言方言支持 | 低延迟、高精度英文识别 |
+
+Parakeet 方案首次运行需安装依赖：
+
+```bash
+uv pip install parakeet-mlx
+```
+
+两个方案可同时运行（不同端口），在浏览器中打开不同页面即可切换。
 
 ---
 

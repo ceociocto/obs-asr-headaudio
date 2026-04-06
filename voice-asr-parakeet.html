@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HeadAudio - Parakeet ASR (English)</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, sans-serif;
+      background: #0f0f1a;
+      color: #fff;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* 顶栏 */
+    #topbar {
+      display: flex;
+      gap: 8px;
+      padding: 8px 12px;
+      background: #1a1a2e;
+      align-items: center;
+      z-index: 10;
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #444;
+    }
+    .dot.on { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+    .dot.busy { background: #60a5fa; animation: blink 1s infinite; }
+    @keyframes blink { 50% { opacity: .5; } }
+    #topbar span { font-size: 12px; margin-right: 12px; }
+
+    /* 头像区 */
+    #avatar {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #avatar canvas { max-width: 100%; max-height: 100%; }
+
+    /* 底栏 */
+    #bottombar {
+      display: flex;
+      gap: 8px;
+      padding: 10px 12px;
+      background: #1a1a2e;
+      align-items: center;
+      z-index: 10;
+    }
+    #input {
+      flex: 1;
+      padding: 10px 14px;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #252540;
+      color: #fff;
+      font-size: 15px;
+    }
+    #input:focus { outline: none; border-color: #667eea; }
+    #input::placeholder { color: #666; }
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      color: #fff;
+      white-space: nowrap;
+    }
+    #mic-btn { background: linear-gradient(135deg, #ef4444, #b91c1c); }
+    #mic-btn.rec { background: linear-gradient(135deg, #22c55e, #15803d); animation: blink .8s infinite; }
+    #speak-btn { background: linear-gradient(135deg, #667eea, #7c3aed); }
+    .btn:active { transform: scale(.96); }
+  </style>
+</head>
+<body>
+
+  <div id="topbar">
+    <div class="dot" id="wsDot"></div><span>WebSocket</span>
+    <div class="dot" id="asrDot"></div><span>ASR (Parakeet)</span>
+    <div class="dot" id="ttsDot"></div><span>TTS</span>
+  </div>
+
+  <div id="avatar"></div>
+
+  <div id="bottombar">
+    <button class="btn" id="mic-btn">⏹ 停止监测</button>
+    <input id="input" placeholder="Type text, press Enter to speak..." />
+    <button class="btn" id="speak-btn">Speak</button>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js/+esm",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+      "talkinghead": "https://cdn.jsdelivr.net/npm/@met4citizen/talkinghead@1.7/modules/talkinghead.mjs",
+      "headaudio": "./dist/headaudio.min.mjs"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import { TalkingHead } from "talkinghead";
+    import { HeadAudio } from "headaudio";
+
+    // --- DOM ---
+    const $ws = document.getElementById("wsDot");
+    const $asr = document.getElementById("asrDot");
+    const $tts = document.getElementById("ttsDot");
+    const $mic = document.getElementById("mic-btn");
+    const $input = document.getElementById("input");
+    const $speak = document.getElementById("speak-btn");
+
+    // --- 全局 ---
+    let head, headaudio, ws, currentSource;
+    let micStream, micNode, pcmBuffers = [], micCtx;
+    let monitoring = false;
+
+    // ========== TalkingHead + HeadAudio ==========
+    async function init() {
+      const container = document.getElementById("avatar");
+
+      head = new TalkingHead(container, {
+        ttsEndpoint: "N/A",
+        lipsyncModules: [],
+        cameraView: "upper",
+        mixerGainSpeech: 3,
+        cameraDistance: -0.9,
+      });
+      window.head = head;
+      await head.start();
+
+      // HeadAudio 口型同步
+      await head.audioCtx.audioWorklet.addModule("./dist/headworklet.min.mjs");
+      headaudio = new HeadAudio(head.audioCtx);
+      try { await headaudio.loadModel("./dist/model-en-mixed.bin"); } catch {}
+      head.audioSpeechGainNode.connect(headaudio);
+      head.audioSpeechGainNode.connect(head.audioCtx.destination);
+      headaudio.onvalue = (k, v) => {
+        if (head.mtAvatar[k])
+          Object.assign(head.mtAvatar[k], { newvalue: v, needsUpdate: true });
+      };
+      head.opt.update = headaudio.update.bind(headaudio);
+      headaudio.onstarted = () => head.setMood("happy");
+      headaudio.onended = () => head.setMood("neutral");
+      window.headaudio = headaudio;
+
+      await head.showAvatar({ url: "./avatars/julia.glb", body: "F", avatarMood: "neutral" });
+    }
+
+    // ========== WebSocket (Parakeet ASR on port 8766) ==========
+    function connectWS() {
+      ws = new WebSocket("ws://localhost:8766");
+      ws.onopen = () => $ws.classList.add("on");
+      ws.onclose = () => { $ws.classList.remove("on"); setTimeout(connectWS, 3000); };
+      ws.onmessage = (e) => {
+        const d = JSON.parse(e.data);
+        if (d.type === "transcript") {
+          $asr.classList.remove("busy");
+          if (d.text) {
+            $input.value = d.text;
+            speak(d.text);
+          }
+        }
+      };
+    }
+
+    // ========== 录音（持续监测模式）==========
+    const SEND_INTERVAL = 3000; // 每3秒发送一次音频
+    let sendTimer = null;
+
+    async function startMonitoring() {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
+      });
+      micCtx = new AudioContext({ sampleRate: 16000 });
+      const src = micCtx.createMediaStreamSource(micStream);
+      const processor = micCtx.createScriptProcessor(4096, 1, 1);
+      pcmBuffers = [];
+      processor.onaudioprocess = (e) => {
+        const pcm = e.inputBuffer.getChannelData(0);
+        pcmBuffers.push(new Float32Array(pcm));
+      };
+      src.connect(processor);
+      processor.connect(micCtx.destination);
+      micNode = processor;
+
+      // 定时发送累积的音频
+      sendTimer = setInterval(sendAudio, SEND_INTERVAL);
+      monitoring = true;
+      $mic.textContent = "⏹ Stop Monitoring";
+      $mic.classList.add("rec");
+      $asr.classList.add("on");
+    }
+
+    function stopMonitoring() {
+      if (sendTimer) { clearInterval(sendTimer); sendTimer = null; }
+      if (micNode) { micNode.disconnect(); micNode = null; }
+      if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+      if (micCtx) { micCtx.close(); micCtx = null; }
+      // 发送剩余数据
+      if (pcmBuffers.length > 0 && ws?.readyState === 1) sendAudio();
+      monitoring = false;
+      $mic.textContent = "🎤 Start Monitoring";
+      $mic.classList.remove("rec");
+      $asr.classList.remove("on");
+    }
+
+    function sendAudio() {
+      if (pcmBuffers.length === 0 || ws?.readyState !== 1) return;
+      const totalLen = pcmBuffers.reduce((s, b) => s + b.length, 0);
+      const merged = new Float32Array(totalLen);
+      let offset = 0;
+      for (const b of pcmBuffers) { merged.set(b, offset); offset += b.length; }
+      pcmBuffers = [];
+
+      const i16 = new Int16Array(totalLen);
+      for (let i = 0; i < totalLen; i++) {
+        const s = Math.max(-1, Math.min(1, merged[i]));
+        i16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+      const bytes = new Uint8Array(i16.buffer);
+      let bin = "";
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      const b64 = btoa(bin);
+
+      ws.send(JSON.stringify({ type: "audio", data: b64, sampleRate: 16000 }));
+      $asr.classList.add("busy");
+    }
+
+    // ========== 口型动画（speechSynthesis 不经过 AudioContext，需手动驱动）==========
+    let mouthAnimId = null, mouthInterval = null, mouthCurrent = 0, mouthTarget = 0;
+
+    function animateMouth() {
+      const mt = head?.mtAvatar;
+      if (!mt) return;
+      mouthCurrent += (mouthTarget - mouthCurrent) * 0.3;
+      if (mt.jawOpen)    Object.assign(mt.jawOpen,    { newvalue: mouthCurrent, needsUpdate: true });
+      if (mt.mouthSmileLeft)  Object.assign(mt.mouthSmileLeft,  { newvalue: mouthCurrent * 0.3, needsUpdate: true });
+      if (mt.mouthSmileRight) Object.assign(mt.mouthSmileRight, { newvalue: mouthCurrent * 0.3, needsUpdate: true });
+      mouthAnimId = requestAnimationFrame(animateMouth);
+    }
+
+    function startMouthAnim() {
+      mouthCurrent = 0; mouthTarget = 0.3;
+      animateMouth();
+      mouthInterval = setInterval(() => { mouthTarget = Math.random() * 0.55 + 0.05; }, 100);
+    }
+
+    function stopMouthAnim() {
+      if (mouthAnimId)  { cancelAnimationFrame(mouthAnimId); mouthAnimId = null; }
+      if (mouthInterval) { clearInterval(mouthInterval); mouthInterval = null; }
+      const mt = head?.mtAvatar;
+      if (!mt) return;
+      if (mt.jawOpen)    Object.assign(mt.jawOpen,    { newvalue: 0, needsUpdate: true });
+      if (mt.mouthSmileLeft)  Object.assign(mt.mouthSmileLeft,  { newvalue: 0, needsUpdate: true });
+      if (mt.mouthSmileRight) Object.assign(mt.mouthSmileRight, { newvalue: 0, needsUpdate: true });
+    }
+
+    // ========== 浏览器 TTS (English) ==========
+    let selectedVoice = null;
+    function loadVoices() {
+      const voices = speechSynthesis.getVoices().filter(v => v.lang.startsWith("en"));
+      selectedVoice = voices.find(v => v.name.includes("Samantha"))
+                   || voices.find(v => v.name.includes("Google"))
+                   || voices[0]
+                   || null;
+      console.log("TTS voice:", selectedVoice?.name || "default");
+    }
+    speechSynthesis.onvoiceschanged = loadVoices;
+    loadVoices();
+
+    function speak(text) {
+      if (!text) return;
+      speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = "en-US";
+      utter.rate = 1.0;
+      if (selectedVoice) utter.voice = selectedVoice;
+
+      // TTS播放期间暂停录音，防止回音被ASR重复识别
+      const wasMonitoring = monitoring;
+      if (monitoring) stopMonitoring();
+
+      $tts.classList.add("busy");
+      if (head) head.setMood("happy");
+      startMouthAnim();
+
+      const done = () => {
+        $tts.classList.remove("busy");
+        stopMouthAnim();
+        if (head) head.setMood("neutral");
+        // TTS结束后恢复录音
+        if (wasMonitoring && ws?.readyState === 1) startMonitoring();
+      };
+      utter.onend = done;
+      utter.onerror = done;
+
+      speechSynthesis.speak(utter);
+    }
+
+    // ========== 事件 ==========
+    // 监测切换按钮
+    $mic.addEventListener("click", () => {
+      if (monitoring) stopMonitoring();
+      else if (ws?.readyState === 1) startMonitoring();
+    });
+
+    // 播放按钮
+    $speak.addEventListener("click", () => speak($input.value.trim()));
+    $input.addEventListener("keydown", (e) => { if (e.key === "Enter") speak($input.value.trim()); });
+
+    // ========== 启动 ==========
+    await init();
+    connectWS();
+    // 等 WebSocket 连接后自动开始监测
+    const autoStart = setInterval(() => {
+      if (ws?.readyState === 1) { clearInterval(autoStart); startMonitoring(); }
+    }, 200);
+  </script>
+</body>
+</html>
