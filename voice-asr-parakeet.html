@@ -82,7 +82,8 @@
 
   <div id="topbar">
     <div class="dot" id="wsDot"></div><span>WebSocket</span>
-    <div class="dot" id="asrDot"></div><span>ASR (Parakeet)</span>
+    <div class="dot" id="asrDot"></div><span>ASR</span>
+    <div class="dot" id="kbDot"></div><span>Knowledge Base</span>
     <div class="dot" id="ttsDot"></div><span>TTS</span>
   </div>
 
@@ -112,6 +113,7 @@
     // --- DOM ---
     const $ws = document.getElementById("wsDot");
     const $asr = document.getElementById("asrDot");
+    const $kb = document.getElementById("kbDot");
     const $tts = document.getElementById("ttsDot");
     const $mic = document.getElementById("mic-btn");
     const $input = document.getElementById("input");
@@ -161,12 +163,21 @@
       ws.onclose = () => { $ws.classList.remove("on"); setTimeout(connectWS, 3000); };
       ws.onmessage = (e) => {
         const d = JSON.parse(e.data);
-        if (d.type === "transcript") {
+        if (d.type === "ready") {
+          // Server ready, update KB indicator
+          if (d.kb) $kb.classList.add("on");
+        } else if (d.type === "transcript") {
           $asr.classList.remove("busy");
           if (d.text) {
             $input.value = d.text;
-            speak(d.text);
+            // Don't speak raw transcript — wait for RAG answer
           }
+        } else if (d.type === "answer") {
+          // RAG answer from knowledge base — speak this
+          $kb.classList.add("on");
+          // 立即停止录音，清除缓冲区，防止 TTS 回音被再次识别
+          pcmBuffers = [];
+          if (d.text) speak(d.text);
         }
       };
     }
@@ -312,9 +323,21 @@
       else if (ws?.readyState === 1) startMonitoring();
     });
 
-    // 播放按钮
-    $speak.addEventListener("click", () => speak($input.value.trim()));
-    $input.addEventListener("keydown", (e) => { if (e.key === "Enter") speak($input.value.trim()); });
+    // 播放按钮：发送文本到服务器进行 RAG 查询
+    $speak.addEventListener("click", () => {
+      const text = $input.value.trim();
+      if (text && ws?.readyState === 1) {
+        ws.send(JSON.stringify({ type: "text", text }));
+      }
+    });
+    $input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const text = $input.value.trim();
+        if (text && ws?.readyState === 1) {
+          ws.send(JSON.stringify({ type: "text", text }));
+        }
+      }
+    });
 
     // ========== 启动 ==========
     await init();

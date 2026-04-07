@@ -43,6 +43,81 @@ huggingface-cli download mlx-community/parakeet-tdt-0.6b-v3
 
 > 模型自动缓存到 `~/.cache/huggingface/hub/`，`parakeet_asr_server.py` 会自动加载。如网络不通，可手动指定本地路径。
 
+#### 2.2 安装 oMLX LLM 推理服务（知识库 RAG 需要）
+
+知识库问答依赖本地 LLM 推理服务 [oMLX](https://github.com/omlx-runtimme/omlx)（Apple Silicon 优化），通过 OpenAI 兼容 API 提供文本生成。
+
+**1) 安装 oMLX：**
+
+```bash
+# Homebrew 安装（推荐）
+brew install omlx
+
+# 或通过 pip
+pip install omlx
+```
+
+**2) 下载模型：**
+
+```bash
+# 推荐使用 Qwen3.5-2B（轻量、响应快、无 thinking 干扰，约 2GB）
+omlx pull Qwen3.5-2B-MLX-8bit
+
+# 也可下载更大模型获得更好质量（但会产生 thinking process）
+# omlx pull Qwen3.5-9B-MLX-4bit    # ~5GB
+# omlx pull Qwen3.5-27B-MLX-4bit   # ~15GB
+```
+
+**3) 启动服务：**
+
+```bash
+omlx serve --model Qwen3.5-2B-MLX-8bit --port 12345
+```
+
+**4) 验证服务：**
+
+```bash
+curl -s http://127.0.0.1:12345/v1/models \
+  -H "Authorization: Bearer 1234" | python3 -m json.tool
+```
+
+> 默认 API Key 为 `1234`，配置文件位于 `~/.omlx/settings.json`。如需修改 Key 或模型选择，编辑 `knowledge_base.py` 顶部的 `DEFAULT_LLM_KEY` 和 `DEFAULT_MODEL` 常量。
+
+#### 2.3 安装 Python 依赖（知识库 RAG 需要）
+
+```bash
+pip install httpx
+```
+
+> `httpx` 用于调用 oMLX 的 OpenAI 兼容 API。其余依赖（`sqlite3`、`re`）为 Python 标准库，无需额外安装。
+
+#### 2.4 知识库数据
+
+知识库使用 SQLite + FTS5 存储，数据文件为项目根目录的 `knowledge.db`：
+
+- **首次启动** `parakeet_asr_server.py` 时，如果数据库为空，会自动注入演示数据（3 场英文模拟会议）
+- **手动测试**：`python3 knowledge_base_demo.py`（交互式问答）
+- **自定义数据**：通过 `KnowledgeBase` API 导入自己的会议记录或文档
+
+```python
+from knowledge_base import KnowledgeBase
+
+kb = KnowledgeBase()
+
+# 添加会议记录
+kb.add_meeting_transcript(
+    turns=[{"role": "Alice", "content": "We need to ship by Friday."}],
+    session_id="standup-apr7",
+    meeting_title="Daily Standup - April 7"
+)
+
+# 添加文档
+kb.add_document("Product specs: feature A supports X and Y.", filename="specs.txt")
+
+# 查询
+print(kb.query("When do we need to ship?"))
+```
+
 #### 3. 启动 OBS (释放浏览器媒体权限)
 
 OBS 需要以特殊参数启动，解除 Chrome 内核对自动播放和麦克风的限制：
@@ -135,6 +210,8 @@ uv run python -m http.server 8000
 
 #### 技术架构
 
+**方案 A — Qwen3-ASR（中文/多语言）：**
+
 ```
 浏览器 (前端)                         Python (后端)
 ┌─────────────┐    WebSocket    ┌──────────────────┐
@@ -145,6 +222,20 @@ uv run python -m http.server 8000
 │ Chrome TTS  │
 │  语音合成    │
 └─────────────┘
+```
+
+**方案 B — Parakeet + Knowledge Base RAG（英文 + 问答）：**
+
+```
+浏览器 (前端)                               Python (后端)
+┌──────────────┐    WebSocket     ┌─────────────────────────┐
+│ TalkingHead  │                  │ parakeet_asr_server.py   │
+│  3D 头像      │◄──────────────►│   ├── Parakeet ASR       │
+│ HeadAudio    │   JSON/Base64   │   └── Knowledge Base RAG  │
+│  口型同步     │                  │       ├── SQLite FTS5    │
+│ Chrome TTS   │                  │       └── oMLX LLM       │
+│  朗读答案     │                  │         (Qwen3.5-2B)     │
+└──────────────┘                  └─────────────────────────┘
 ```
 
 - **HeadAudio**: 浏览器 AudioWorklet，实时分析音频 MFCC 特征 → 马氏距离分类 → 输出 Oculus viseme 口型参数
@@ -173,6 +264,55 @@ uv pip install parakeet-mlx
 ```
 
 两个方案可同时运行（不同端口），在浏览器中打开不同页面即可切换。
+
+#### Knowledge Base RAG（会议助手知识库）
+
+Parakeet ASR 方案已集成本地知识库，实现 RAG（检索增强生成）问答：
+
+```
+Mic → ASR (Parakeet) → 文字显示 → RAG (FTS5 检索 + LLM 生成) → 答案 → Chrome TTS 朗读
+```
+
+**技术方案：**
+
+- **存储**：SQLite + FTS5 全文索引，存储会议记录和文档
+- **检索**：基于 FTS5 的关键词匹配，检索相关会议片段
+- **生成**：本地 oMLX LLM（Qwen3.5-2B-MLX-8bit），OpenAI 兼容 API
+- **防回音**：TTS 播放时暂停录音 + ASR 填充词过滤
+
+**相关文件：**
+
+| 文件 | 说明 |
+|------|------|
+| `knowledge_base.py` | 知识库核心模块，RAG 管线（检索 + 生成） |
+| `knowledge_base_demo.py` | 演示数据（3 场英文模拟会议）+ 交互测试 |
+| `parakeet_asr_server.py` | ASR + RAG 集成服务（ws://localhost:8766） |
+| `voice-asr-parakeet.html` | 前端界面（含 KB 状态指示灯） |
+
+**使用方法：**
+
+```bash
+# 1. 确保 oMLX LLM 服务运行在 http://127.0.0.1:12345/v1
+# 2. 启动服务（自动加载知识库，首次自动注入演示数据）
+python3 parakeet_asr_server.py
+# 3. 打开前端
+open http://localhost:8000/voice-asr-parakeet.html
+```
+
+**语音测试示例（英文）：**
+
+| 说 | 预期回答 |
+|---|---|
+| "When is the launch?" | April 15th |
+| "How many bugs are open?" | 23 |
+| "What about the onboarding?" | 3 steps |
+| "Who handles the dashboard?" | Dave |
+
+**CLI 快速测试：**
+
+```bash
+python3 -c "from knowledge_base import KnowledgeBase; print(KnowledgeBase().query('When is the launch?'))"
+```
 
 ---
 
