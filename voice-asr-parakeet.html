@@ -75,40 +75,57 @@
     #speak-btn { background: linear-gradient(135deg, #667eea, #7c3aed); }
     .btn:active { transform: scale(.96); }
 
-    /* 右侧信息面板 */
+    /* 右侧信息面板 - 仅显示统计数据 */
     #info-panel {
       position: fixed;
       right: 12px;
       top: 60px;
-      width: 320px;
-      max-height: calc(100vh - 120px);
+      width: 200px;
       background: #1a1a2e;
       border-radius: 12px;
       padding: 16px;
-      overflow-y: auto;
       z-index: 10;
     }
     #info-panel h3 {
-      font-size: 14px;
+      font-size: 12px;
       color: #2d8cff;
       margin-bottom: 12px;
     }
     .info-item {
-      font-size: 12px;
-      padding: 6px 0;
+      font-size: 11px;
+      padding: 4px 0;
       border-bottom: 1px solid #2a2a2a;
     }
     .info-label { color: #666; }
     .info-value { color: #ccc; }
-    .result-item {
-      font-size: 11px;
-      padding: 8px;
-      background: #252540;
-      border-radius: 6px;
-      margin-bottom: 8px;
+
+    /* 底部字幕区域 */
+    #subtitle-container {
+      position: fixed;
+      bottom: 70px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 90%;
+      max-width: 800px;
+      text-align: center;
+      z-index: 10;
+      pointer-events: none;
     }
-    .result-speaker { color: #2d8cff; font-weight: 500; }
-    .result-text { color: #ddd; margin-top: 4px; }
+    #subtitle {
+      display: inline-block;
+      background: rgba(0, 0, 0, 0.75);
+      color: #fff;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 18px;
+      font-weight: 500;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+      line-height: 1.5;
+      max-width: 100%;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    #subtitle.visible { opacity: 1; }
   </style>
 </head>
 <body>
@@ -121,15 +138,18 @@
 
   <div id="avatar"></div>
 
+  <div id="subtitle-container">
+    <div id="subtitle"></div>
+  </div>
+
   <div id="info-panel">
-    <h3>Captions Database Query</h3>
+    <h3>Database</h3>
     <div id="stats">
       <div class="info-item">
         <span class="info-label">Status</span>
         <span class="info-value">Connecting...</span>
       </div>
     </div>
-    <div id="results"></div>
   </div>
 
   <div id="bottombar">
@@ -159,7 +179,7 @@
     const $input = document.getElementById("input");
     const $speak = document.getElementById("speak-btn");
     const $stats = document.getElementById("stats");
-    const $results = document.getElementById("results");
+    const $subtitle = document.getElementById("subtitle");
 
     // --- 全局 ---
     let head, headaudio, ws;
@@ -211,9 +231,13 @@
         } else if (d.type === "answer") {
           $db.classList.add("on");
           if (d.text) {
-            showResult(d.text, d.captions);
             speak(d.text);
           }
+        } else if (d.type === "no_trigger") {
+          // 显示提示（短时间闪烁）
+          $subtitle.textContent = d.text || "请说 'hey echo' 或 'echo' 开头";
+          $subtitle.classList.add("visible");
+          setTimeout(() => hideSubtitle(), 2000);
         }
       };
     }
@@ -236,22 +260,12 @@
       `;
     }
 
+    function hideSubtitle() {
+      $subtitle.classList.remove("visible");
+    }
+
     function showResult(answer, captions) {
-      let html = `<div class="result-item"><div style="color: #4ade80; font-weight: 500;">Answer</div><div style="color: #ddd; margin-top: 4px;">${escapeHTML(answer)}</div></div>`;
-
-      if (captions && captions.length > 0) {
-        html += `<div style="font-size: 11px; color: #666; margin: 8px 0;">Related captions:</div>`;
-        captions.forEach(c => {
-          html += `
-            <div class="result-item">
-              <div class="result-speaker">${escapeHTML(c.speaker || "Speaker")}</div>
-              <div class="result-text">${escapeHTML(c.text)}</div>
-            </div>
-          `;
-        });
-      }
-
-      $results.innerHTML = html;
+      // 此函数保留用于其他场景，目前通过speak显示字幕
     }
 
     function escapeHTML(str) {
@@ -268,6 +282,11 @@
                    || voices.find(v => v.name.includes("Google"))
                    || voices[0]
                    || null;
+
+      // TTS 就绪时显示绿色
+      if (selectedVoice || voices.length > 0) {
+        $tts.classList.add("on");
+      }
     }
     speechSynthesis.onvoiceschanged = loadVoices;
     loadVoices();
@@ -304,6 +323,11 @@
     function speak(text) {
       if (!text) return;
       speechSynthesis.cancel();
+
+      // 显示字幕
+      $subtitle.textContent = text;
+      $subtitle.classList.add("visible");
+
       const utter = new SpeechSynthesisUtterance(text);
       utter.lang = "en-US";
       utter.rate = 1.0;
@@ -317,6 +341,7 @@
         $tts.classList.remove("busy");
         stopMouthAnim();
         if (head) head.setMood("neutral");
+        hideSubtitle();
       };
       utter.onend = done;
       utter.onerror = done;

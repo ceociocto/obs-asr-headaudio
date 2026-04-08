@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
-Zoom Captions Database Query 服务器 + 本地 LLM
+Zoom Captions Database Query 服务器 + HTTP API LLM
 从 captions.db 查询历史字幕，结合本地 Qwen3.5-2B-MLX-8bit 模型回答问题
 
-用法: uv run zoom_captions_server.py
+问答流程：
+1. 使用 LLM 从问题中提取关键词
+2. 根据关键词搜索相关字幕
+3. 构建上下文（会议信息、发言人、时间）
+4. 使用 LLM 基于上下文生成友好回答
+
+用法: python3 zoom_captions_server.py
 
 数据源:
 - /Volumes/sn7100/jerry/code/zoom-meeting-sdk-demo/captions.db
-- 本地模型: Qwen3.5-2B-MLX-8bit
+- LLM API: http://127.0.0.1:12345/v1 (Qwen3.5-2B-MLX-8bit)
 """
 
 import asyncio
@@ -17,18 +23,13 @@ import logging
 import sqlite3
 import os
 import re
+import requests
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Dict
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("zoom-captions-server")
-
-# --- 本地 LLM 模型配置 ---
-# 使用本地模型目录
-MODEL_PATH = "/Volumes/sn7100/jerry/code/mlx-vlm"
-MAX_TOKENS = 150
-TEMPERATURE = 0.7
 
 # --- Zoom Captions Database ---
 ZOOM_DB_PATH = "/Volumes/sn7100/jerry/code/zoom-meeting-sdk-demo/captions.db"
@@ -213,6 +214,67 @@ else:
 # --- 线程池执行器 (用于 LLM 推理) ---
 executor = ThreadPoolExecutor(max_workers=1)
 
+# --- 内存字幕缓存 (实时字幕，避免数据库延迟) ---
+class CaptionCache:
+    """实时字幕缓存，避免数据库写入延迟"""
+
+    def __init__(self, max_size: int = 200):
+        self.max_size = max_size
+        self.captions: List[Dict] = []
+        self.lock = None
+
+    async def init(self):
+        """初始化异步锁"""
+        import asyncio
+        self.lock = asyncio.Lock()
+
+    async def add(self, speaker: str, text: str, timestamp: str = None):
+        """添加字幕到缓存"""
+        if not self.lock:
+            await self.init()
+
+        async with self.lock:
+            from datetime import datetime
+            caption = {
+                "speaker": speaker,
+                "text": text,
+                "received_at": timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            self.captions.append(caption)
+
+            # 保持缓存大小
+            if len(self.captions) > self.max_size:
+                self.captions = self.captions[-self.max_size:]
+
+            # 打印日志，方便测试
+            log.info(f"[Cache] Added caption [{len(self.captions)}/{self.max_size}]: {speaker}: {text[:50]}...")
+
+    async def search(self, keywords: List[str], limit: int = 50) -> List[Dict]:
+        """根据关键词搜索缓存中的字幕"""
+        if not self.lock:
+            await self.init()
+
+        async with self.lock:
+            if not keywords:
+                return self.captions[-limit:]
+
+            # 搜索包含任一关键词的字幕
+            results = []
+            for cap in self.captions:
+                text_lower = cap["text"].lower()
+                if any(kw.lower() in text_lower for kw in keywords):
+                    results.append(cap)
+
+            return results[-limit:]
+
+    def get_recent(self, limit: int = 50) -> List[Dict]:
+        """获取最近 N 条字幕（同步方法，用于 LLM 上下文构建）"""
+        return self.captions[-limit:]
+
+
+# 全局缓存实例
+caption_cache = CaptionCache(max_size=200)
+
 
 def format_captions_response(captions: List[Dict], query: str = "") -> str:
     """格式化字幕查询结果为自然语言回答（备用，不使用 LLM）"""
@@ -235,197 +297,275 @@ def format_captions_response(captions: List[Dict], query: str = "") -> str:
             return f"Found {len(captions)} related captions. Recent mentions: {', '.join(texts[:3])}"
 
 
-# --- 本地 LLM (MLX) ---
-model = None
-tokenizer = None
+# --- 唤醒词列表 ---
+TRIGGER_WORDS = ["hey echo", "echo", "Aiko", "mike", "mac", "mic"]
+
+# --- 本地 LLM 模型配置 (HTTP API) ---
+LLM_API_BASE = "http://127.0.0.1:12345/v1"
+LLM_API_KEY = "1234"
+LLM_MODEL = "Qwen3.5-2B-MLX-8bit"
+MAX_TOKENS = 500
+TEMPERATURE = 0.7
+
+# --- 本地 LLM (HTTP API) ---
 LLM_OK = False
 
-try:
-    from mlx_lm import load, generate
 
-    def init_llm():
-        global model, tokenizer, LLM_OK
-        try:
-            log.info(f"正在加载 MLX 模型: {MODEL_PATH}")
-            log.info("首次加载可能需要下载模型，请耐心等待...")
-            model, tokenizer = load(MODEL_PATH)
-            LLM_OK = True
-            log.info("✓ MLX 模型加载成功")
-        except Exception as e:
-            log.error(f"✗ MLX 模型加载失败: {e}")
-            log.info("提示: 安装 mlx-lm: pip install mlx-lm")
-            LLM_OK = False
+def check_llm_connection():
+    """检查 LLM API 连接"""
+    global LLM_OK
+    try:
+        response = requests.post(
+            f"{LLM_API_BASE}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {LLM_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": LLM_MODEL,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 5
+            },
+            timeout=5
+        )
+        LLM_OK = response.status_code == 200
+        return LLM_OK
+    except Exception as e:
+        LLM_OK = False
+        return False
 
-    def call_llm(query: str, context: str) -> Optional[str]:
-        """使用本地 MLX 模型生成回答"""
-        if not LLM_OK or not model or not tokenizer:
-            return None
 
-        if not context:
-            context = "No relevant captions found."
-
-        system_prompt = "You are a helpful assistant that answers questions based on meeting captions. Keep answers concise (2-3 sentences)."
-
-        prompt = f"""<|im_start|>system
-{system_prompt}<|im_end|>
-<|im_start|>user
-Context from meeting captions:
-{context}
-
-Question: {query}<|im_end|>
-<|im_start|>assistant
-"""
-
-        try:
-            response = generate(
-                model,
-                tokenizer,
-                prompt=prompt,
-                max_tokens=MAX_TOKENS,
-                verbose=False
-            )
-            # 移除 prompt 部分，只返回生成的回答
-            if "<|im_start|>assistant" in response:
-                response = response.split("<|im_start|>assistant")[-1].strip()
-            return response.strip()
-        except Exception as e:
-            log.error(f"LLM 生成错误: {e}")
-            return None
-
-    def call_llm_with_sql(query: str) -> tuple[Optional[str], Optional[str], Optional[List[Dict]]]:
-        """使用 LLM 生成 SQL 查询，执行并回答"""
-        if not LLM_OK or not model or not tokenizer:
-            return None, None, None
-
-        schema = captions_db.get_schema()
-
-        system_prompt = """You are a SQL expert. Based on the user's question, generate a SQLite query to search the meeting captions database.
-
-Rules:
-1. Return ONLY the SQL query, no explanations, no thinking process
-2. Do NOT use <think> tags or any reasoning tags
-3. Use SELECT with speaker, text, received_at columns
-4. Use LIKE for text search with % wildcards
-5. Limit results to 20 rows maximum
-6. Order by received_at DESC (most recent first)
-7. Return valid SQL only"""
-
-        prompt = f"""<|im_start|>system
-{system_prompt}<|im_end|>
-<|im_start|>user
-{schema}
-
-Question: {query}
-
-Generate SQL query:<|im_end|>
-<|im_start|>assistant
-"""
-
-        try:
-            # 第一步：生成 SQL
-            sql_response = generate(
-                model,
-                tokenizer,
-                prompt=prompt,
-                max_tokens=100,
-                verbose=False
-            )
-
-            # 清理 SQL 响应 - 移除所有多余内容
-            # 1. 移除 <|im_start|>assistant 标记
-            if "<|im_start|>assistant" in sql_response:
-                sql_response = sql_response.split("<|im_start|>assistant")[-1].strip()
-
-            # 2. 移除 <|im_end|> 标记
-            if "<|im_end|>" in sql_response:
-                sql_response = sql_response.split("<|im_end|>")[0].strip()
-
-            # 3. 移除  标签及其内容（Qwen 的思考过程）
-            while "" in sql_response:
-                before = sql_response
-                # 移除从  到  的内容
-                sql_response = re.sub(r'<think>.*?</think>\s*', '', sql_response, flags=re.DOTALL)
-                if sql_response == before:
-                    break  # 没有更多变化，退出循环
-
-            # 4. 移除 markdown 代码块标记 ```sql 或 ```
-            # 移除 ```sql 或 ```SQL 开头
-            sql_response = re.sub(r'^```(?:sql|SQL)?\s*', '', sql_response, flags=re.IGNORECASE)
-            # 移除结尾的 ```
-            sql_response = re.sub(r'```\s*$', '', sql_response)
-
-            # 5. 清理重复内容 - 只保留到第一个分号
-            if ';' in sql_response:
-                sql_response = sql_response.split(';')[0] + ';'
-
-            # 6. 移除重复的 LIMIT 子句
-            # 查找所有 LIMIT 并只保留第一个
-            limit_matches = list(re.finditer(r'LIMIT\s+\d+', sql_response, re.IGNORECASE))
-            if len(limit_matches) > 1:
-                # 只保留第一个 LIMIT，移除其他的
-                first_limit_end = limit_matches[0].end()
-                sql_response = sql_response[:first_limit_end] + ';'
-
-            # 7. 最终清理空行和多余空格
-            lines = [line.strip() for line in sql_response.split('\n') if line.strip()]
-            sql_response = '\n'.join(lines).strip()
-
-            log.info(f"生成的 SQL: {sql_response}")
-
-            # 第二步：执行 SQL
-            captions = captions_db.execute_sql(sql_response)
-
-            if not captions:
-                return f"Sorry, couldn't find relevant information.", sql_response, None
-
-            # 第三步：基于结果生成回答
-            context = build_context_from_captions(captions)
-            answer = call_llm(query, context)
-
-            if answer:
-                return answer, sql_response, captions
-            else:
-                # 回退到简单格式
-                fallback = format_captions_response(captions, query)
-                return fallback, sql_response, captions
-
-        except Exception as e:
-            log.error(f"LLM+SQL 错误: {e}")
-            return None, None, None
-
-    # 初始化模型
-    init_llm()
-
-except ImportError as e:
-    log.warning(f"✗ mlx-lm 未安装: {e}")
-    log.info("提示: 安装 mlx-lm: pip install mlx-lm")
-    LLM_OK = False
-
-    def call_llm(query: str, context: str) -> Optional[str]:
+def call_llm(messages: list) -> Optional[str]:
+    """使用 HTTP API 调用 LLM"""
+    if not LLM_OK:
         return None
 
-    def init_llm():
-        pass
+    try:
+        response = requests.post(
+            f"{LLM_API_BASE}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {LLM_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": LLM_MODEL,
+                "messages": messages,
+                "temperature": TEMPERATURE,
+                "max_tokens": MAX_TOKENS
+            },
+            timeout=30
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        log.error(f"LLM API 错误: {e}")
+        return None
+
+
+def call_llm_with_context(query: str, context: str) -> Optional[str]:
+    """使用 LLM 基于上下文回答问题"""
+    if not context:
+        context = "No relevant captions found."
+
+    system_prompt = """你是一个专业的会议助手，基于会议记录回答用户问题。
+
+回答原则：
+1. 基于提供的会议记录回答，不要编造信息
+2. 如果记录中没有相关信息，诚实告知用户
+3. 回答要简洁、友好、有条理
+4. 可以引用发言人和时间点
+5. 如果信息分散，请进行整理归纳"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"会议记录：\n{context}\n\n问题：{query}"}
+    ]
+
+    return call_llm(messages)
+
+
+def extract_keywords(question: str) -> List[str]:
+    """让 LLM 提取问题中的关键词"""
+    if not LLM_OK:
+        # 简单分词作为回退
+        import re
+        words = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z]+', question)
+        return [w for w in words if len(w) > 1]
+
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a keyword extraction assistant. Extract the 2-4 most important Chinese or English keywords from the user's question, separated by spaces. Return only the keywords, nothing else."
+        },
+        {
+            "role": "user",
+            "content": f"问题: {question}\n\n关键词:"
+        }
+    ]
+    response = call_llm(messages)
+    if response:
+        keywords = response.strip().split()
+        return [kw for kw in keywords if len(kw) > 1]
+    return []
+
+
+async def search_captions_by_keywords(keywords: List[str]) -> tuple[List[Dict], bool]:
+    """根据关键词搜索相关字幕
+
+    优先从内存缓存获取，缓存为空时才查询数据库。
+
+    Returns:
+        (字幕列表, 是否来自缓存)
+    """
+    # 先从内存缓存获取（实时字幕）
+    cached = await caption_cache.search(keywords, limit=50)
+    if cached:
+        log.info(f"[Cache] Found {len(cached)} captions from memory cache")
+        return cached, True
+
+    # 缓存为空，回退到数据库查询（历史字幕）
+    if not captions_db.is_connected():
+        return [], False
+
+    if not keywords:
+        # 获取最近的字幕
+        return captions_db.get_recent_captions(minutes=1440, limit=50), False  # 24小时内
+
+    import sqlite3
+    conn = sqlite3.connect(ZOOM_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    # 构建模糊匹配条件
+    conditions = []
+    params = []
+    for kw in keywords:
+        conditions.append("c.text LIKE ?")
+        params.append(f"%{kw}%")
+
+    query = f"""
+        SELECT c.text, c.speaker, c.received_at, m.topic, m.meeting_number
+        FROM captions c
+        JOIN meetings m ON c.meeting_id = m.id
+        WHERE {' OR '.join(conditions)}
+        ORDER BY c.received_at
+        LIMIT 50
+    """
+
+    cursor.execute(query, params)
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return results, False
 
 
 def build_context_from_captions(captions: List[Dict]) -> str:
     """从字幕列表构建上下文"""
     if not captions:
-        return "No relevant captions found."
+        return "暂无会议记录。"
 
     context_parts = []
-    for c in captions[:10]:  # 最多使用 10 条字幕
-        speaker = c.get('speaker', 'Speaker')
-        text = c.get('text', '')
-        time_str = c.get('received_at', '')
-        context_parts.append(f"[{speaker}]: {text}")
+    current_meeting = None
+
+    for cap in captions:
+        meeting_info = f"会议: {cap.get('topic') or cap.get('meeting_number', 'N/A')}"
+        if meeting_info != current_meeting:
+            current_meeting = meeting_info
+            context_parts.append(f"\n[{meeting_info}]")
+
+        speaker = cap.get('speaker', '未知')
+        time = cap.get('received_at', '')[-8:]  # 只显示时间部分
+        text = cap.get('text', '')
+        context_parts.append(f"  [{time}] {speaker}: {text}")
 
     return "\n".join(context_parts)
 
 
+async def answer_question(question: str) -> tuple[Optional[str], Optional[List[Dict]]]:
+    """基于关键词搜索回答问题（优先使用内存缓存）"""
+    # 提取关键词
+    keywords = extract_keywords(question)
+    log.info(f"提取关键词: {keywords}")
+
+    # 搜索相关内容（优先从内存缓存）
+    relevant_captions, from_cache = await search_captions_by_keywords(keywords)
+    source = "[缓存]" if from_cache else "[数据库]"
+    log.info(f"{source} 找到 {len(relevant_captions)} 条相关字幕")
+
+    if not relevant_captions:
+        return "抱歉，没有找到相关的会议记录。", None
+
+    # 构建上下文
+    context = build_context_from_captions(relevant_captions)
+
+    # 构建提示词
+    system_prompt = """You are a professional meeting assistant that answers questions based on meeting records.
+
+Answering principles:
+1. Answer based on the provided meeting records, do not fabricate information
+2. If there is no relevant information in the records, inform the user honestly
+3. Keep answers concise, friendly, and organized
+4. Reference speakers and time points when applicable
+5. Organize scattered information logically
+
+Meeting records:
+""" + context
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": question}
+    ]
+
+    answer = call_llm(messages)
+    if not answer:
+        answer = format_captions_response(relevant_captions, question)
+
+    return answer, relevant_captions
+
+
+# 初始化 LLM 连接
+check_llm_connection()
+if LLM_OK:
+    log.info(f"✓ LLM API 连接成功: {LLM_API_BASE}")
+else:
+    log.warning(f"✗ LLM API 不可用: {LLM_API_BASE}")
+
 # --- WebSocket ---
+# 维护所有连接的客户端，用于广播
+connected_clients = []
+
+
+async def broadcast_message(message: dict, exclude_ws=None):
+    """广播消息给所有连接的客户端"""
+    if not connected_clients:
+        log.warning("[Broadcast] 没有连接的客户端")
+        return
+
+    data = json.dumps(message)
+    disconnected = []
+
+    for client in connected_clients:
+        if client == exclude_ws:
+            continue
+        try:
+            await client.send(data)
+            log.info(f"[Broadcast] 发送消息到客户端")
+        except Exception as e:
+            log.error(f"[Broadcast] 发送失败: {e}")
+            disconnected.append(client)
+
+    # 清理断开的连接
+    for client in disconnected:
+        if client in connected_clients:
+            connected_clients.remove(client)
+
+
 async def handler(ws):
     log.info("客户端连接")
+
+    # 添加到连接列表
+    connected_clients.append(ws)
+    remote_addr = ws.remote_address if hasattr(ws, 'remote_address') else 'unknown'
+    log.info(f"[WebSocket] 新连接来自: {remote_addr}, 总连接数: {len(connected_clients)}")
 
     # 发送初始化状态
     await ws.send(json.dumps({
@@ -435,100 +575,135 @@ async def handler(ws):
         "stats": captions_db.get_stats() if CAPTIONS_OK else {}
     }))
 
-    async for msg in ws:
-        try:
-            data = json.loads(msg)
-        except json.JSONDecodeError:
-            continue
-
-        msg_type = data.get("type")
-
-        # 文本查询
-        if msg_type == "text":
-            text = data.get("text", "").strip()
-            if not text:
+    try:
+        async for msg in ws:
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
                 continue
 
-            log.info(f"查询: {text}")
+            msg_type = data.get("type")
 
-            # 使用 LLM 生成 SQL 并回答
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                executor, call_llm_with_sql, text
-            )
+            # 文本查询 (检测唤醒词)
+            if msg_type == "text":
+                text = data.get("text", "").strip()
+                if not text:
+                    continue
 
-            if result:
-                answer, sql, captions = result
+                log.info(f"收到文本: {text}")
 
-                if answer:
+                # 检测唤醒词
+                text_lower = text.lower()
+                trigger_word = None
+                question = text
+
+                for word in TRIGGER_WORDS:
+                    if word in text_lower:
+                        trigger_word = word
+                        question = text_lower.split(word, 1)[1].strip()
+                        break
+
+                # 只有检测到唤醒词才回答
+                if trigger_word:
+                    log.info(f"唤醒词触发: {trigger_word}, 问题: {question}")
+
+                    answer, captions = await answer_question(question)
+
                     await ws.send(json.dumps({
                         "type": "answer",
                         "text": answer,
-                        "sql": sql,
+                        "question": question,
                         "captions": (captions or [])[:5]
                     }))
                 else:
-                    # 回退到简单搜索
-                    captions = captions_db.search_captions(text, limit=10)
-                    if captions:
-                        fallback = format_captions_response(captions, text)
-                        await ws.send(json.dumps({
-                            "type": "answer",
-                            "text": fallback,
-                            "captions": captions[:5]
-                        }))
-                    else:
-                        await ws.send(json.dumps({
-                            "type": "answer",
-                            "text": f"Sorry, I couldn't find any information about '{text}' in the meeting captions."
-                        }))
-            else:
-                # LLM 不可用，回退到简单搜索
-                captions = captions_db.search_captions(text, limit=10)
-                if captions:
-                    fallback = format_captions_response(captions, text)
+                    log.info(f"没有唤醒词，忽略: {text}")
                     await ws.send(json.dumps({
-                        "type": "answer",
-                        "text": fallback,
-                        "captions": captions[:5]
-                    }))
-                else:
-                    await ws.send(json.dumps({
-                        "type": "answer",
-                        "text": f"Sorry, I couldn't find any information about '{text}' in the meeting captions."
+                        "type": "no_trigger",
+                        "text": f"请使用唤醒词: {', '.join(TRIGGER_WORDS)}"
                     }))
 
-        # 获取会议列表
-        elif msg_type == "meetings":
-            meetings = captions_db.get_all_meetings()
-            await ws.send(json.dumps({
-                "type": "meetings",
-                "data": meetings
-            }))
-
-        # 获取指定会议的字幕
-        elif msg_type == "meeting_captions":
-            meeting_id = data.get("meeting_id")
-            if meeting_id:
-                captions = captions_db.get_meeting_captions(meeting_id)
+            # 获取会议列表
+            elif msg_type == "meetings":
+                meetings = captions_db.get_all_meetings()
                 await ws.send(json.dumps({
-                    "type": "meeting_captions",
-                    "meeting_id": meeting_id,
+                    "type": "meetings",
+                    "data": meetings
+                }))
+
+            # 获取指定会议的字幕
+            elif msg_type == "meeting_captions":
+                meeting_id = data.get("meeting_id")
+                if meeting_id:
+                    captions = captions_db.get_meeting_captions(meeting_id)
+                    await ws.send(json.dumps({
+                        "type": "meeting_captions",
+                        "meeting_id": meeting_id,
+                        "data": captions
+                    }))
+
+            # 获取最近字幕
+            elif msg_type == "recent_captions":
+                minutes = data.get("minutes", 30)
+                captions = captions_db.get_recent_captions(minutes=minutes)
+                await ws.send(json.dumps({
+                    "type": "recent_captions",
                     "data": captions
                 }))
 
-        # 获取最近字幕
-        elif msg_type == "recent_captions":
-            minutes = data.get("minutes", 30)
-            captions = captions_db.get_recent_captions(minutes=minutes)
-            await ws.send(json.dumps({
-                "type": "recent_captions",
-                "data": captions
-            }))
+            # Zoom 实时字幕 - 检测唤醒词
+            elif msg_type == "caption":
+                text = data.get("text", "").strip()
+                speaker = data.get("speaker", "")
+                if not text:
+                    continue
 
-        # Ping/Pong
-        elif msg_type == "ping":
-            await ws.send(json.dumps({"type": "pong"}))
+                log.info(f"收到字幕: {speaker}: {text}")
+
+                # 立即添加到内存缓存
+                await caption_cache.add(speaker, text)
+
+                # 检测唤醒词
+                text_lower = text.lower()
+                trigger_word = None
+                question = None
+
+                for word in TRIGGER_WORDS:
+                    if word in text_lower:
+                        trigger_word = word
+                        question = text_lower.split(word, 1)[1].strip()
+                        break
+
+                # 如果检测到唤醒词且有后续内容
+                if trigger_word and question:
+                    log.info(f"唤醒词触发: {trigger_word}, 问题: {question}")
+
+                    # 调用 LLM 查询
+                    answer, captions = await answer_question(question)
+
+                    # 广播答案给所有客户端（包括 voice-asr-parakeet.html）
+                    await broadcast_message({
+                        "type": "answer",
+                        "text": answer,
+                        "question": question,
+                        "captions": (captions or [])[:5]
+                    })
+                    log.info(f"[Broadcast] 答案已广播给 {len(connected_clients)} 个客户端")
+                else:
+                    # 仅确认收到字幕
+                    await ws.send(json.dumps({
+                        "type": "caption_received",
+                        "text": text
+                    }))
+
+            # Ping/Pong
+            elif msg_type == "ping":
+                await ws.send(json.dumps({"type": "pong"}))
+
+    finally:
+        # 客户端断开，清理连接
+        if ws in connected_clients:
+            connected_clients.remove(ws)
+            log.info(f"[WebSocket] 客户端断开，剩余连接: {len(connected_clients)}")
 
 
 async def main():

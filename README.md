@@ -208,6 +208,170 @@ uv run python -m http.server 8000
 
 页面加载后，语音检测默认自动开启，对麦克风说话即可触发 ASR 识别 → Chrome TTS 朗读 → HeadAudio 驱动口型同步。点击麦克风按钮可切换检测开关状态。
 
+---
+
+### Zoom 会议助手 Demo
+
+本 Demo 集成了 Zoom Meeting SDK，实现会议字幕实时捕获、缓存和 AI 问答功能。数字人会通过系统语音（TTS）回答会议相关问题。
+
+**功能特点：**
+- **实时字幕缓存**：收到字幕立即存入内存，避免数据库写入延迟
+- **唤醒词触发**：支持 "hey echo", "echo", "Aiko", "mike", "mac", "mic" 等唤醒词
+- **广播机制**：答案广播给所有连接的客户端（数字人、Web 界面等）
+- **系统语音回答**：使用浏览器内置 TTS 播放答案，数字人同步口型
+- **无 STT 依赖**：不使用语音识别，直接从 Zoom 字幕获取文本
+
+#### 架构说明
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  web-demo.html (Zoom Meeting SDK)                              │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Zoom SDK → 获取字幕                                      │   │
+│  │     ↓                                                    │   │
+│  │  ├─→ HTTP API → captions.db (数据库)                     │   │
+│  │  └─→ WebSocket → zoom_captions_server.py → 内存缓存       │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  zoom_captions_server.py (ws://localhost:8767)                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ 收到 caption 事件 → 添加到内存缓存 (CaptionCache)        │   │
+│  │     ↓                                                    │   │
+│  │  检测唤醒词 → 从缓存获取上下文 → LLM 生成答案            │   │
+│  │     ↓                                                    │   │
+│  │  广播答案给所有连接的客户端                              │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  voice-asr-parakeet.html (数字人查询端)                         │
+│  连接 WebSocket → 接收答案 → Chrome TTS 朗读 → 口型同步       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 使用步骤
+
+**1. 启动后端服务 (zoom_captions_server.py)**
+
+```bash
+# 终端 1: 启动 Zoom 字幕服务
+python3 zoom_captions_server.py
+```
+
+服务监听 `ws://localhost:8767`，提供：
+- 字幕缓存（最多 200 条）
+- 唤醒词检测
+- LLM 问答（需 oMLX 服务运行）
+- 答案广播
+
+**2. 启动 Zoom Bot 前端 (web-demo.html)**
+
+```bash
+# 终端 2: 启动 zoom-meeting-sdk-demo 的 web 服务器
+cd /Volumes/sn7100/jerry/code/zoom-meeting-sdk-demo
+node web-server.js 8080
+```
+
+浏览器打开 `http://localhost:8080/web-demo.html`
+
+**重要：手动开启字幕功能**
+
+加入 Zoom 会议后，需要**手动启用字幕**：
+1. 在 Zoom 会议中，点击 "Live Transcript" 或 "CC" 按钮
+2. 选择 "Enable Auto-Transcription" 或请求主持人开启
+3. 确认字幕开始显示
+
+**3. 启动数字人前端 (voice-asr-parakeet.html)**
+
+```bash
+# 终端 3: 启动 HeadAudio HTTP 服务
+uv run python -m http.server 8000
+```
+
+浏览器打开 `http://localhost:8000/voice-asr-parakeet.html`
+
+**4. 启动 OBS（可选，用于直播/录制）**
+
+```bash
+# 终端 4: 启动 OBS
+chmod +x start_obs.sh
+./start_obs.sh
+```
+
+在 OBS 中添加浏览器源：
+- URL: `http://localhost:8000/voice-asr-parakeet.html`
+- 宽度: 1920, 高度: 1080
+
+#### 完整启动流程
+
+```bash
+# 终端 1: 后端服务
+python3 zoom_captions_server.py
+
+# 终端 2: Zoom Bot Web 服务器
+cd /Volumes/sn7100/jerry/code/zoom-meeting-sdk-demo
+node web-server.js 8080
+
+# 终端 3: 数字人前端
+uv run python -m http.server 8000
+
+# 终端 4: OBS（可选）
+./start_obs.sh
+```
+
+#### 测试唤醒词
+
+**方式 1：通过 Zoom 字幕触发**
+
+1. 加入 Zoom 会议
+2. 确保字幕已启用
+3. 有人说话包含唤醒词，例如：
+   - "Hey echo，今天会议讨论了什么？"
+   - "Mike，总结一下刚才的内容"
+4. 数字人会自动回答问题
+
+**方式 2：手动查询**
+
+在 `voice-asr-parakeet.html` 的输入框中输入：
+- "echo 今天天气怎么样"
+- "Aiko 会议中有哪些决定"
+
+#### 配置说明
+
+**唤醒词列表** (`zoom_captions_server.py`):
+```python
+TRIGGER_WORDS = ["hey echo", "echo", "Aiko", "mike", "mac", "mic"]
+```
+
+**缓存大小** (`zoom_captions_server.py`):
+```python
+caption_cache = CaptionCache(max_size=200)  # 最多缓存 200 条字幕
+```
+
+**LLM 配置** (`zoom_captions_server.py`):
+```python
+LLM_API_BASE = "http://127.0.0.1:12345/v1"  # oMLX 服务地址
+LLM_MODEL = "Qwen3.5-2B-MLX-8bit"            # 模型名称
+```
+
+#### 注意事项
+
+1. **字幕延迟**：Zoom 字幕可能有 2-5 秒延迟，属正常现象
+2. **唤醒词检测**：字幕中的唤醒词会自动触发，无需手动操作
+3. **多客户端**：答案会广播给所有连接的客户端，包括 Web 界面和数字人
+4. **TTS 语音**：使用浏览器内置 TTS（Chrome 的 "Samantha" 或 "Google" 语音）
+5. **数据库路径**：`/Volumes/sn7100/jerry/code/zoom-meeting-sdk-demo/captions.db`
+
+#### 相关文件
+
+| 文件 | 说明 |
+|------|------|
+| `zoom_captions_server.py` | 后端服务，缓存+LLM 问答 |
+| `voice-asr-parakeet.html` | 数字人查询前端 |
+| `/Volumes/sn7100/jerry/code/zoom-meeting-sdk-demo/web-demo.html` | Zoom Bot 前端 |
+
 #### 技术架构
 
 **方案 A — Qwen3-ASR（中文/多语言）：**
