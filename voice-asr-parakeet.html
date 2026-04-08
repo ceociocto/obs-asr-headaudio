@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HeadAudio - Parakeet ASR (English)</title>
+  <title>HeadAudio - Captions Query</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -72,27 +72,69 @@
       color: #fff;
       white-space: nowrap;
     }
-    #mic-btn { background: linear-gradient(135deg, #ef4444, #b91c1c); }
-    #mic-btn.rec { background: linear-gradient(135deg, #22c55e, #15803d); animation: blink .8s infinite; }
     #speak-btn { background: linear-gradient(135deg, #667eea, #7c3aed); }
     .btn:active { transform: scale(.96); }
+
+    /* 右侧信息面板 */
+    #info-panel {
+      position: fixed;
+      right: 12px;
+      top: 60px;
+      width: 320px;
+      max-height: calc(100vh - 120px);
+      background: #1a1a2e;
+      border-radius: 12px;
+      padding: 16px;
+      overflow-y: auto;
+      z-index: 10;
+    }
+    #info-panel h3 {
+      font-size: 14px;
+      color: #2d8cff;
+      margin-bottom: 12px;
+    }
+    .info-item {
+      font-size: 12px;
+      padding: 6px 0;
+      border-bottom: 1px solid #2a2a2a;
+    }
+    .info-label { color: #666; }
+    .info-value { color: #ccc; }
+    .result-item {
+      font-size: 11px;
+      padding: 8px;
+      background: #252540;
+      border-radius: 6px;
+      margin-bottom: 8px;
+    }
+    .result-speaker { color: #2d8cff; font-weight: 500; }
+    .result-text { color: #ddd; margin-top: 4px; }
   </style>
 </head>
 <body>
 
   <div id="topbar">
     <div class="dot" id="wsDot"></div><span>WebSocket</span>
-    <div class="dot" id="asrDot"></div><span>ASR</span>
-    <div class="dot" id="kbDot"></div><span>Knowledge Base</span>
+    <div class="dot" id="dbDot"></div><span>Captions DB</span>
     <div class="dot" id="ttsDot"></div><span>TTS</span>
   </div>
 
   <div id="avatar"></div>
 
+  <div id="info-panel">
+    <h3>Captions Database Query</h3>
+    <div id="stats">
+      <div class="info-item">
+        <span class="info-label">Status</span>
+        <span class="info-value">Connecting...</span>
+      </div>
+    </div>
+    <div id="results"></div>
+  </div>
+
   <div id="bottombar">
-    <button class="btn" id="mic-btn">⏹ 停止监测</button>
-    <input id="input" placeholder="Type text, press Enter to speak..." />
-    <button class="btn" id="speak-btn">Speak</button>
+    <input id="input" placeholder="Ask about the meeting captions..." />
+    <button class="btn" id="speak-btn">Ask</button>
   </div>
 
   <script type="importmap">
@@ -112,17 +154,15 @@
 
     // --- DOM ---
     const $ws = document.getElementById("wsDot");
-    const $asr = document.getElementById("asrDot");
-    const $kb = document.getElementById("kbDot");
+    const $db = document.getElementById("dbDot");
     const $tts = document.getElementById("ttsDot");
-    const $mic = document.getElementById("mic-btn");
     const $input = document.getElementById("input");
     const $speak = document.getElementById("speak-btn");
+    const $stats = document.getElementById("stats");
+    const $results = document.getElementById("results");
 
     // --- 全局 ---
-    let head, headaudio, ws, currentSource;
-    let micStream, micNode, pcmBuffers = [], micCtx;
-    let monitoring = false;
+    let head, headaudio, ws;
 
     // ========== TalkingHead + HeadAudio ==========
     async function init() {
@@ -156,96 +196,83 @@
       await head.showAvatar({ url: "./avatars/julia.glb", body: "F", avatarMood: "neutral" });
     }
 
-    // ========== WebSocket (Parakeet ASR on port 8766) ==========
+    // ========== WebSocket ==========
     function connectWS() {
-      ws = new WebSocket("ws://localhost:8766");
+      ws = new WebSocket("ws://localhost:8767");
       ws.onopen = () => $ws.classList.add("on");
       ws.onclose = () => { $ws.classList.remove("on"); setTimeout(connectWS, 3000); };
       ws.onmessage = (e) => {
         const d = JSON.parse(e.data);
         if (d.type === "ready") {
-          // Server ready, update KB indicator
-          if (d.kb) $kb.classList.add("on");
-        } else if (d.type === "transcript") {
-          $asr.classList.remove("busy");
-          if (d.text) {
-            $input.value = d.text;
-            // Don't speak raw transcript — wait for RAG answer
+          if (d.captions) {
+            $db.classList.add("on");
+            updateStats(d.stats);
           }
         } else if (d.type === "answer") {
-          // RAG answer from knowledge base — speak this
-          $kb.classList.add("on");
-          // 立即停止录音，清除缓冲区，防止 TTS 回音被再次识别
-          pcmBuffers = [];
-          if (d.text) speak(d.text);
+          $db.classList.add("on");
+          if (d.text) {
+            showResult(d.text, d.captions);
+            speak(d.text);
+          }
         }
       };
     }
 
-    // ========== 录音（持续监测模式）==========
-    const SEND_INTERVAL = 3000; // 每3秒发送一次音频
-    let sendTimer = null;
-
-    async function startMonitoring() {
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
-      });
-      micCtx = new AudioContext({ sampleRate: 16000 });
-      const src = micCtx.createMediaStreamSource(micStream);
-      const processor = micCtx.createScriptProcessor(4096, 1, 1);
-      pcmBuffers = [];
-      processor.onaudioprocess = (e) => {
-        const pcm = e.inputBuffer.getChannelData(0);
-        pcmBuffers.push(new Float32Array(pcm));
-      };
-      src.connect(processor);
-      processor.connect(micCtx.destination);
-      micNode = processor;
-
-      // 定时发送累积的音频
-      sendTimer = setInterval(sendAudio, SEND_INTERVAL);
-      monitoring = true;
-      $mic.textContent = "⏹ Stop Monitoring";
-      $mic.classList.add("rec");
-      $asr.classList.add("on");
+    function updateStats(stats) {
+      if (!stats) return;
+      $stats.innerHTML = `
+        <div class="info-item">
+          <span class="info-label">Meetings</span>
+          <span class="info-value">${stats.meetings || 0}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Captions</span>
+          <span class="info-value">${stats.captions || 0}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Participants</span>
+          <span class="info-value">${stats.participants || 0}</span>
+        </div>
+      `;
     }
 
-    function stopMonitoring() {
-      if (sendTimer) { clearInterval(sendTimer); sendTimer = null; }
-      if (micNode) { micNode.disconnect(); micNode = null; }
-      if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
-      if (micCtx) { micCtx.close(); micCtx = null; }
-      // 发送剩余数据
-      if (pcmBuffers.length > 0 && ws?.readyState === 1) sendAudio();
-      monitoring = false;
-      $mic.textContent = "🎤 Start Monitoring";
-      $mic.classList.remove("rec");
-      $asr.classList.remove("on");
-    }
+    function showResult(answer, captions) {
+      let html = `<div class="result-item"><div style="color: #4ade80; font-weight: 500;">Answer</div><div style="color: #ddd; margin-top: 4px;">${escapeHTML(answer)}</div></div>`;
 
-    function sendAudio() {
-      if (pcmBuffers.length === 0 || ws?.readyState !== 1) return;
-      const totalLen = pcmBuffers.reduce((s, b) => s + b.length, 0);
-      const merged = new Float32Array(totalLen);
-      let offset = 0;
-      for (const b of pcmBuffers) { merged.set(b, offset); offset += b.length; }
-      pcmBuffers = [];
-
-      const i16 = new Int16Array(totalLen);
-      for (let i = 0; i < totalLen; i++) {
-        const s = Math.max(-1, Math.min(1, merged[i]));
-        i16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      if (captions && captions.length > 0) {
+        html += `<div style="font-size: 11px; color: #666; margin: 8px 0;">Related captions:</div>`;
+        captions.forEach(c => {
+          html += `
+            <div class="result-item">
+              <div class="result-speaker">${escapeHTML(c.speaker || "Speaker")}</div>
+              <div class="result-text">${escapeHTML(c.text)}</div>
+            </div>
+          `;
+        });
       }
-      const bytes = new Uint8Array(i16.buffer);
-      let bin = "";
-      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-      const b64 = btoa(bin);
 
-      ws.send(JSON.stringify({ type: "audio", data: b64, sampleRate: 16000 }));
-      $asr.classList.add("busy");
+      $results.innerHTML = html;
     }
 
-    // ========== 口型动画（speechSynthesis 不经过 AudioContext，需手动驱动）==========
+    function escapeHTML(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    // ========== TTS ==========
+    let selectedVoice = null;
+    function loadVoices() {
+      const voices = speechSynthesis.getVoices().filter(v => v.lang.startsWith("en"));
+      selectedVoice = voices.find(v => v.name.includes("Samantha"))
+                   || voices.find(v => v.name.includes("Google"))
+                   || voices[0]
+                   || null;
+    }
+    speechSynthesis.onvoiceschanged = loadVoices;
+    loadVoices();
+
+    // 口型动画
     let mouthAnimId = null, mouthInterval = null, mouthCurrent = 0, mouthTarget = 0;
 
     function animateMouth() {
@@ -274,19 +301,6 @@
       if (mt.mouthSmileRight) Object.assign(mt.mouthSmileRight, { newvalue: 0, needsUpdate: true });
     }
 
-    // ========== 浏览器 TTS (English) ==========
-    let selectedVoice = null;
-    function loadVoices() {
-      const voices = speechSynthesis.getVoices().filter(v => v.lang.startsWith("en"));
-      selectedVoice = voices.find(v => v.name.includes("Samantha"))
-                   || voices.find(v => v.name.includes("Google"))
-                   || voices[0]
-                   || null;
-      console.log("TTS voice:", selectedVoice?.name || "default");
-    }
-    speechSynthesis.onvoiceschanged = loadVoices;
-    loadVoices();
-
     function speak(text) {
       if (!text) return;
       speechSynthesis.cancel();
@@ -294,10 +308,6 @@
       utter.lang = "en-US";
       utter.rate = 1.0;
       if (selectedVoice) utter.voice = selectedVoice;
-
-      // TTS播放期间暂停录音，防止回音被ASR重复识别
-      const wasMonitoring = monitoring;
-      if (monitoring) stopMonitoring();
 
       $tts.classList.add("busy");
       if (head) head.setMood("happy");
@@ -307,8 +317,6 @@
         $tts.classList.remove("busy");
         stopMouthAnim();
         if (head) head.setMood("neutral");
-        // TTS结束后恢复录音
-        if (wasMonitoring && ws?.readyState === 1) startMonitoring();
       };
       utter.onend = done;
       utter.onerror = done;
@@ -317,35 +325,22 @@
     }
 
     // ========== 事件 ==========
-    // 监测切换按钮
-    $mic.addEventListener("click", () => {
-      if (monitoring) stopMonitoring();
-      else if (ws?.readyState === 1) startMonitoring();
-    });
-
-    // 播放按钮：发送文本到服务器进行 RAG 查询
-    $speak.addEventListener("click", () => {
+    function sendQuery() {
       const text = $input.value.trim();
       if (text && ws?.readyState === 1) {
         ws.send(JSON.stringify({ type: "text", text }));
+        $input.value = "";
       }
-    });
+    }
+
+    $speak.addEventListener("click", sendQuery);
     $input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        const text = $input.value.trim();
-        if (text && ws?.readyState === 1) {
-          ws.send(JSON.stringify({ type: "text", text }));
-        }
-      }
+      if (e.key === "Enter") sendQuery();
     });
 
     // ========== 启动 ==========
     await init();
     connectWS();
-    // 等 WebSocket 连接后自动开始监测
-    const autoStart = setInterval(() => {
-      if (ws?.readyState === 1) { clearInterval(autoStart); startMonitoring(); }
-    }, 200);
   </script>
 </body>
 </html>
