@@ -306,20 +306,47 @@ chmod +x start_obs.sh
 
 #### 完整启动流程
 
-```bash
-# 终端 1: 后端服务
-python3 zoom_captions_server.py
+**启动顺序：**
 
-# 终端 2: Zoom Bot Web 服务器
+```bash
+# === 终端 1: 启动应答服务 ===
+python3 zoom_captions_server.py
+# 监听 ws://localhost:8767
+
+# === 终端 2: 启动 Zoom SDK 字幕捕获服务 ===
 cd /Volumes/sn7100/jerry/code/zoom-meeting-sdk-demo
 node web-server.js 8080
+# 访问 http://localhost:8080/web-demo.html
 
-# 终端 3: 数字人前端
+# === 终端 3: 启动数字人 Web 服务 ===
+# 使用 Live Server 或 Python HTTP Server
 uv run python -m http.server 8000
+# 或在 VS Code 中使用 "Live Server" 打开 voice-asr-parakeet.html
+# 访问 http://127.0.0.1:5500/voice-asr-parakeet.html (Live Server)
+# 或 http://localhost:8000/voice-asr-parakeet.html (Python)
 
-# 终端 4: OBS（可选）
+# === 终端 4: 带参数启动 OBS ===
+chmod +x start_obs.sh
 ./start_obs.sh
+
+# === 步骤 5: 在 OBS 中启动虚拟摄像头 ===
+# OBS 菜单: 文件 → 设置 → 视频
+# 或者使用 OBS 插件 "Virtual Cam" 输出虚拟摄像头
+
+# === 步骤 6: 通过 localhost:8080 加入 Zoom 会议 ===
+# 浏览器访问 http://localhost:8080/web-demo.html
+# 输入会议号和密码加入会议
+
+# === 步骤 7: 确保字幕功能已开启 ===
+# Host 端: 在 Zoom 中开启 "Live Transcript" / "CC"
+# Bot 端: 确认字幕显示正常
 ```
+
+**重要提示：**
+1. 所有服务必须按顺序启动，确保依赖关系正确
+2. OBS 需要先完全退出 (`Command+Q`) 再用脚本启动
+3. 虚拟摄像头需要在 OBS 设置中配置
+4. 会议 Host 和 Bot 端都必须开启字幕功能（待确认）
 
 #### 测试唤醒词
 

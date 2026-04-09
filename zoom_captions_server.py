@@ -277,24 +277,22 @@ caption_cache = CaptionCache(max_size=200)
 
 
 def format_captions_response(captions: List[Dict], query: str = "") -> str:
-    """格式化字幕查询结果为自然语言回答（备用，不使用 LLM）"""
+    """Format caption query results as natural language response (fallback when LLM unavailable)"""
     if not captions:
-        return f"Sorry, I couldn't find any information about '{query}' in the meeting captions."
+        return f"Sorry, I couldn't find any relevant information about '{query}' in the meeting records."
 
-    # 构建回答
+    # Extract information from captions and build a knowledge-style response
     if len(captions) == 1:
         c = captions[0]
-        return f"Found: {c.get('speaker', 'Speaker')} said \"{c.get('text', '')}\""
+        text = c.get('text', '')
+        # Use content directly as answer, avoid 'X said' format
+        return text.strip()
     else:
-        # 多条结果，汇总
-        speakers = set(c.get('speaker', 'Speaker') for c in captions)
-        texts = [c.get('text', '') for c in captions[:5]]
-
-        if len(speakers) == 1:
-            speaker = list(speakers)[0]
-            return f"{speaker} mentioned: {', '.join(texts[:3])}"
-        else:
-            return f"Found {len(captions)} related captions. Recent mentions: {', '.join(texts[:3])}"
+        # Multiple results, combine content
+        texts = [c.get('text', '') for c in captions[:3]]
+        # Combine relevant content
+        combined = "; ".join(texts)
+        return combined.strip()
 
 
 # --- 唤醒词列表 ---
@@ -363,22 +361,34 @@ def call_llm(messages: list) -> Optional[str]:
 
 
 def call_llm_with_context(query: str, context: str) -> Optional[str]:
-    """使用 LLM 基于上下文回答问题"""
+    """Use LLM to answer questions based on context"""
     if not context:
         context = "No relevant captions found."
 
-    system_prompt = """你是一个专业的会议助手，基于会议记录回答用户问题。
+    system_prompt = """You are a professional meeting knowledge assistant. Extract information from meeting conversations and provide knowledge-based answers.
 
-回答原则：
-1. 基于提供的会议记录回答，不要编造信息
-2. 如果记录中没有相关信息，诚实告知用户
-3. 回答要简洁、友好、有条理
-4. 可以引用发言人和时间点
-5. 如果信息分散，请进行整理归纳"""
+Core Principles:
+1. **Extract knowledge, don't paraphrase dialogue** - Don't say 'X said...', just state the facts directly
+2. **Synthesize scattered information** - If information is scattered across multiple places, combine into a complete answer
+3. **Answer directly** - If asked about price, give the price; if asked about time, give the time
+4. **Natural conversation** - Answer in your own words, as if you already know this information
+5. **Reference only when necessary** - Only mention 'according to the meeting' when the answer is uncertain
+
+Answer Format:
+- Give the answer directly, no prefixes like 'According to captions...' or 'Meeting records show...'
+- For specific info like prices, times, numbers, provide them directly
+- If information is insufficient, clearly state what's missing, don't guess
+- Keep it concise, typically 1-3 sentences
+
+Examples:
+- Q: How much is the book? A: The book costs XX yuan.
+- Q: When is the meeting? A: The meeting is scheduled for tomorrow at 2 PM.
+- Q: Who is responsible for this project? A: Zhang San is responsible for this project.
+"""
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"会议记录：\n{context}\n\n问题：{query}"}
+        {"role": "user", "content": f"Meeting conversation records:\n{context}\n\nQuestion: {query}"}
     ]
 
     return call_llm(messages)
@@ -480,34 +490,105 @@ def build_context_from_captions(captions: List[Dict]) -> str:
     return "\n".join(context_parts)
 
 
+def is_general_question(question: str) -> bool:
+    """判断是否为普通问题（不需要查询数据库）
+
+    普通问题：问候、闲聊、一般性问题
+    具体问题：会议内容、数据、事实查询
+    """
+    if not LLM_OK:
+        return False
+
+    # 检测是否为具体问题的关键词
+    specific_keywords = [
+        # 会议相关
+        "meeting", "meeting content", "what discussed", "what said", "who said",
+        "会议", "会议内容", "讨论了", "说了什么", "谁说",
+        # 数据相关
+        "price", "cost", "how much", "number", "count", "when", "where", "who",
+        "价格", "多少钱", "多少", "时间", "地点", "谁",
+        # 记录相关
+        "record", "history", "captions", "mentioned", "talked about",
+        "记录", "历史", "字幕", "提到", "讨论"
+    ]
+
+    question_lower = question.lower()
+    for kw in specific_keywords:
+        if kw in question_lower:
+            return False  # 是具体问题，需要查询数据库
+
+    # 检测是否为问候/闲聊
+    general_patterns = [
+        "hello", "hi", "hey", "how are you", "what's up", "thank", "thanks",
+        "你好", "嗨", "谢谢", "怎么样",
+    ]
+
+    for pattern in general_patterns:
+        if pattern in question_lower:
+            return True  # 是普通问题
+
+    # 默认情况下，如果问题很短且不包含具体关键词，视为普通问题
+    return len(question.split()) <= 3
+
+
 async def answer_question(question: str) -> tuple[Optional[str], Optional[List[Dict]]]:
     """基于关键词搜索回答问题（优先使用内存缓存）"""
-    # 提取关键词
+    # 判断问题类型
+    if is_general_question(question):
+        log.info(f"[General Question] 直接由 LLM 回答: {question}")
+
+        messages = [
+            {
+                "role": "system",
+                "content": """You are a helpful meeting assistant. Answer the user's question directly and naturally.
+Keep your response concise (1-2 sentences). Be friendly and helpful."""
+            },
+            {"role": "user", "content": question}
+        ]
+
+        answer = call_llm(messages)
+        if answer:
+            return answer, None
+        # 如果 LLM 失败，回退到数据库查询
+        log.info("LLM direct answer failed, falling back to database query")
+
+    # 具体问题：查询数据库
     keywords = extract_keywords(question)
     log.info(f"提取关键词: {keywords}")
 
     # 搜索相关内容（优先从内存缓存）
     relevant_captions, from_cache = await search_captions_by_keywords(keywords)
-    source = "[缓存]" if from_cache else "[数据库]"
-    log.info(f"{source} 找到 {len(relevant_captions)} 条相关字幕")
+    source = "[Cache]" if from_cache else "[Database]"
+    log.info(f"{source} Found {len(relevant_captions)} relevant captions")
 
     if not relevant_captions:
-        return "抱歉，没有找到相关的会议记录。", None
+        return "Sorry, I couldn't find any relevant content in the meeting records.", None
 
     # 构建上下文
     context = build_context_from_captions(relevant_captions)
 
     # 构建提示词
-    system_prompt = """You are a professional meeting assistant that answers questions based on meeting records.
+    system_prompt = """You are a professional meeting knowledge assistant. Extract information from meeting conversations and provide knowledge-based answers.
 
-Answering principles:
-1. Answer based on the provided meeting records, do not fabricate information
-2. If there is no relevant information in the records, inform the user honestly
-3. Keep answers concise, friendly, and organized
-4. Reference speakers and time points when applicable
-5. Organize scattered information logically
+Core Principles:
+1. **Extract knowledge, don't paraphrase dialogue** - Don't say 'X said...', just state the facts directly
+2. **Synthesize scattered information** - If information is scattered across multiple places, combine into a complete answer
+3. **Answer directly** - If asked about price, give the price; if asked about time, give the time
+4. **Natural conversation** - Answer in your own words, as if you already know this information
+5. **Reference only when necessary** - Only mention 'according to the meeting' when the answer is uncertain
 
-Meeting records:
+Answer Format:
+- Give the answer directly, no prefixes like 'According to captions...' or 'Meeting records show...'
+- For specific info like prices, times, numbers, provide them directly
+- If information is insufficient, clearly state what's missing, don't guess
+- Keep it concise, typically 1-3 sentences
+
+Examples:
+- Q: How much is the book? A: The book costs XX yuan.
+- Q: When is the meeting? A: The meeting is scheduled for tomorrow at 2 PM.
+- Q: Who is responsible for this project? A: Zhang San is responsible for this project.
+
+Meeting conversation records:
 """ + context
 
     messages = [
