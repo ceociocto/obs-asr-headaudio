@@ -253,11 +253,13 @@ uv run python -m http.server 8000
 
 #### 使用步骤
 
+**0. 启动LLM服务，确保LLM在后端服务之间已经就位。否则回答内容重复听到的话。
+
 **1. 启动后端服务 (zoom_captions_server.py)**
 
 ```bash
 # 终端 1: 启动 Zoom 字幕服务
-python3 zoom_captions_server.py
+uv run python zoom_captions_server.py
 ```
 
 服务监听 `ws://localhost:8767`，提供：
