@@ -1,5 +1,16 @@
 # HeadAudio
 
+本地语音识别 + 3D 虚拟头像 + Zoom 会议字幕录制，全部在本地运行。
+
+---
+
+## 模块概览
+
+| 模块 | 说明 | 端口 |
+|------|------|------|
+| Zoom 字幕录制 | 加入 Zoom 会议并录制字幕到 SQLite | 8768 (HTTP) / 8767 (WS) |
+| 知识库问答 | 基于 RAG 的会议助手 | 12345 (LLM) |
+
 ---
 
 ### Quick Start / 快速开始
@@ -334,6 +345,258 @@ chmod +x start_obs.sh
 # === 步骤 5: 在 OBS 中启动虚拟摄像头 ===
 # OBS 菜单: 文件 → 设置 → 视频
 # 或者使用 OBS 插件 "Virtual Cam" 输出虚拟摄像头
+
+---
+
+## Zoom Meeting Captions 模块
+
+独立的 Zoom 会议字幕录制模块，用于从 Web 加入会议并实时存储字幕到 SQLite 数据库。
+
+### 功能特性
+
+- 🌐 **Web 界面加入** - 直接在浏览器中加入 Zoom 会议（无需安装客户端）
+- 📝 **实时字幕存储** - 自动捕获会议字幕并存储到 `captions.db`
+- 🔄 **自动重试** - 会议未开始时自动重试（10秒倒计时）
+- 📊 **统计面板** - 显示已录制的字幕和会议数量
+- 🚫 **AI 过滤** - 自动过滤 AI 助手回复和唤醒词
+- 🔗 **数据库集成** - 与现有 `zoom_captions_server.py` 兼容
+
+### 前期配置
+
+#### 1. 创建 Zoom Meeting SDK 应用
+
+1. 访问 [Zoom Marketplace](https://marketplace.zoom.us/)
+2. 点击 **Develop** → **Build App**
+3. **选择应用类型：Meeting SDK** （⚠️ 不是 JWT App！）
+4. 填写应用信息并创建
+5. 在 **App Credentials** 页面获取：
+   - **SDK Key** - 填入 `.env` 的 `ZOOM_SDK_KEY`
+   - **SDK Secret** - 填入 `.env` 的 `ZOOM_SDK_SECRET`
+
+**重要提示：**
+- ✅ 正确应用类型：**Meeting SDK**
+- ❌ 错误应用类型：**JWT App**（SDK 2.7.0+ 已不支持）
+
+#### 2. 配置环境变量
+
+在项目根目录创建 `.env` 文件（或从模板复制）：
+
+```bash
+cp .env.zoom .env
+```
+
+编辑 `.env` 文件：
+
+```env
+# Zoom Meeting SDK Credentials
+ZOOM_SDK_KEY=your_sdk_key_here
+ZOOM_SDK_SECRET=your_sdk_secret_here
+
+# Meeting details (可选，用于快速测试)
+ZOOM_MEETING_NUMBER=
+ZOOM_MEETING_PASSWORD=
+ZOOM_BOT_NAME=Caption Recorder
+```
+
+#### 3. Zoom SDK 依赖
+
+**无需手动安装！** Zoom SDK 通过 CDN 加载：
+
+- 所有依赖（React/Redux/Zoom SDK）：[unpkg.com/@zoom/meetingsdk](https://unpkg.com/browse/@zoom/meetingsdk@6.0.0/)
+- 无需本地 node_modules 或符号链接
+- 开箱即用，方便其他开发者使用
+
+### 快速启动
+
+#### 方式一：一键启动（推荐）
+
+```bash
+./start-zoom-captions.sh
+```
+
+这将：
+1. 启动字幕存储服务器（HTTP: 8768, WebSocket: 8767）
+2. 自动在浏览器打开 `http://localhost:8768`
+
+#### 方式二：手动启动
+
+```bash
+# 终端 1: 启动 Python 后端
+uv run python zoom_captions_storage_server.py
+```
+
+服务器输出：
+```
+============================================================
+Zoom Meeting Captions Storage Server
+============================================================
+Database: /Volumes/sn7100/jerry/code/HeadAudio/captions.db
+  Meetings: 1
+  Captions: 0
+  Participants: 0
+
+Servers:
+  HTTP API: http://localhost:8768
+  WebSocket: ws://localhost:8767
+============================================================
+```
+
+### 使用流程
+
+#### 1. 配置凭证
+
+打开 `http://localhost:8768`，页面会自动从以下位置读取配置：
+
+1. 当前项目 `.env` 文件
+2. `zoom-meeting-sdk-demo/.env` 文件（如果存在）
+3. localStorage 中保存的凭证
+
+#### 2. 加入会议
+
+填写会议信息并点击 "Join Meeting"：
+
+| 字段 | 说明 | 示例 |
+|------|------|------|
+| Meeting Number | Zoom 会议号 | 123-456-789 或 123456789 |
+| Passcode | 会议密码（如需要） | c86f82 |
+| Your Name | 显示名称 | Caption Recorder |
+| Role | 角色（Host/Attendee） | Attendee |
+
+#### 3. 会议未开始时的处理
+
+如果会议尚未开始，系统会自动：
+
+1. 显示友好提示：⏳ **Meeting not yet started**
+2. 显示会议 ID 和当前状态
+3. **10 秒倒计时后自动重试**
+4. 或手动点击 "Retry Join" 立即重试
+5. 点击 "Cancel" 取消重试
+
+**状态显示示例：**
+```
+⏳ Meeting not yet started
+Meeting ID: 8765399843
+
+Auto-retrying in 5 seconds...
+```
+
+#### 4. 字幕录制
+
+成功加入会议后：
+
+- **自动捕获** - 会议中的所有字幕自动存储到 `captions.db`
+- **实时显示** - Web 界面实时显示字幕内容
+- **统计更新** - 显示已捕获的字幕数量
+
+### 数据库结构
+
+字幕存储在 `captions.db`（SQLite）：
+
+```sql
+-- meetings 表
+CREATE TABLE meetings (
+    id INTEGER PRIMARY KEY,
+    meeting_number TEXT NOT NULL,
+    topic TEXT,
+    host_name TEXT,
+    started_at TEXT,
+    ended_at TEXT
+);
+
+-- captions 表
+CREATE TABLE captions (
+    id INTEGER PRIMARY KEY,
+    meeting_id INTEGER NOT NULL,
+    speaker TEXT,
+    text TEXT NOT NULL,
+    caption_type TEXT DEFAULT 'transcription',
+    received_at TEXT,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+);
+
+-- participants 表
+CREATE TABLE participants (
+    id INTEGER PRIMARY KEY,
+    meeting_id INTEGER NOT NULL,
+    user_id TEXT,
+    user_name TEXT,
+    is_host INTEGER DEFAULT 0,
+    joined_at TEXT,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+);
+```
+
+### API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/config` | GET | 获取配置（用于页面默认值） |
+| `/api/meeting` | POST | 创建会议记录 |
+| `/api/caption` | POST | 存储字幕 |
+| `/api/participant` | POST | 添加参与者 |
+| `/api/meetings` | GET | 获取所有会议 |
+| `/api/captions?meetingId=N` | GET | 获取会议字幕 |
+| `/api/stats` | GET | 获取数据库统计 |
+
+### 故障排除
+
+#### Error Code 3 (签名错误)
+
+**原因：** 使用了错误的应用类型
+
+**解决方案：**
+1. 检查是否使用 **Meeting SDK** 类型（不是 JWT App）
+2. 确认 SDK Key 和 Secret 正确
+3. 确认会议号码正确
+
+#### Zoom SDK failed to load
+
+**原因：** Zoom SDK 文件未正确加载
+
+**解决方案：**
+1. 检查网络连接（需要访问 CDN）
+2. 检查服务器是否正在运行（端口 8768）
+3. 刷新浏览器页面
+4. 如果 CDN 访问受限，可考虑本地部署 Zoom SDK
+
+#### 会议未开始
+
+**解决方案：**
+- 系统会自动重试
+- 或等待会议开始后点击 "Retry Join"
+
+### 文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `zoom-meeting-captions.html` | Web 界面（加入会议 + 显示字幕） |
+| `zoom_captions_storage_server.py` | Python 后端（字幕存储 + API） |
+| `start-zoom-captions.sh` | 一键启动脚本 |
+| `.env.zoom` | 配置文件模板 |
+| `captions.db` | SQLite 数据库（自动创建） |
+
+### 与现有模块集成
+
+Zoom Meeting Captions 模块与现有 `zoom_captions_server.py` 完全兼容：
+
+- 使用相同的数据库格式
+- 共享相同的 WebSocket 端口（8767）
+- 可以与语音识别和数字人模块同时运行
+
+**同时运行多个服务：**
+
+```bash
+# 终端 1: Zoom 字幕查询 + LLM 应答
+uv run python zoom_captions_server.py
+
+# 终端 2: Zoom 会议字幕录制
+uv run python zoom_captions_storage_server.py
+
+# 终端 3: 语音识别（如需要）
+uv run python voice-asr-server.py
+```
+
+---
 
 # === 步骤 6: 通过 localhost:8080 加入 Zoom 会议 ===
 # 浏览器访问 http://localhost:8080/web-demo.html

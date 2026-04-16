@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zoom Meeting Captions - Join & Record</title>
+
+  <!-- Dependencies -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+
+  <!-- Zoom Meeting SDK (from unpkg CDN) -->
+  <script src="https://unpkg.com/@zoom/meetingsdk@6.0.0/dist/lib/vendor/react.min.js"></script>
+  <script src="https://unpkg.com/@zoom/meetingsdk@6.0.0/dist/lib/vendor/react-dom.min.js"></script>
+  <script src="https://unpkg.com/@zoom/meetingsdk@6.0.0/dist/lib/vendor/redux.min.js"></script>
+  <script src="https://unpkg.com/@zoom/meetingsdk@6.0.0/dist/lib/vendor/redux-thunk.min.js"></script>
+  <script src="https://unpkg.com/@zoom/meetingsdk@6.0.0/dist/lib/vendor/lodash.min.js"></script>
+  <script src="https://unpkg.com/@zoom/meetingsdk@6.0.0/dist/zoom-meeting-6.0.0.min.js"></script>
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #0f0f0f 0%, #1a1a2e 100%);
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .header {
+      text-align: center;
+      padding: 40px 20px;
+    }
+
+    .header h1 {
+      font-size: 28px;
+      color: #2d8cff;
+      margin-bottom: 10px;
+    }
+
+    .header p {
+      color: #888;
+      font-size: 14px;
+    }
+
+    .card {
+      background: #1a1a1a;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+
+    .card h2 {
+      font-size: 18px;
+      color: #fff;
+      margin-bottom: 16px;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      color: #888;
+      margin-bottom: 6px;
+    }
+
+    .form-group input,
+    .form-group select {
+      width: 100%;
+      padding: 10px 12px;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 6px;
+      color: #e0e0e0;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .form-group input:focus,
+    .form-group select:focus {
+      border-color: #2d8cff;
+    }
+
+    .form-row {
+      display: flex;
+      gap: 12px;
+    }
+
+    .form-row .form-group {
+      flex: 1;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #2d8cff 0%, #0066cc 100%);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+
+    .btn-danger {
+      background: #f44336;
+      color: white;
+    }
+
+    .btn-danger:hover {
+      opacity: 0.8;
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .status {
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
+
+    .status.info {
+      background: #1a237e;
+      color: #64b5f6;
+    }
+
+    .status.success {
+      background: #1b5e20;
+      color: #81c784;
+    }
+
+    .status.error {
+      background: #b71c1c;
+      color: #ef9a9a;
+    }
+
+    .captions-log {
+      background: #111;
+      border-radius: 8px;
+      padding: 16px;
+      max-height: 300px;
+      overflow-y: auto;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 12px;
+    }
+
+    .caption-item {
+      padding: 6px 0;
+      border-bottom: 1px solid #222;
+    }
+
+    .caption-item:last-child {
+      border-bottom: none;
+    }
+
+    .caption-speaker {
+      color: #2d8cff;
+      font-weight: 600;
+    }
+
+    .caption-text {
+      color: #888;
+    }
+
+    .caption-time {
+      color: #555;
+      font-size: 11px;
+    }
+
+    .stats {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .stat-item {
+      flex: 1;
+      min-width: 120px;
+      background: #111;
+      padding: 12px;
+      border-radius: 8px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 24px;
+      font-weight: 600;
+      color: #2d8cff;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #888;
+      margin-top: 4px;
+    }
+
+    #zoom-container {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1000;
+    }
+
+    #zoom-container.active {
+      display: block;
+    }
+
+    .config-section {
+      background: #111;
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+
+    .config-section h3 {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 12px;
+    }
+
+    .api-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+
+    .api-status.connected {
+      background: #1b5e20;
+      color: #81c784;
+    }
+
+    .api-status.disconnected {
+      background: #3d0a0a;
+      color: #ef9a9a;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Zoom Meeting Captions</h1>
+      <p>Join Zoom meetings and capture captions to SQLite database</p>
+    </div>
+
+    <!-- API Connection Status -->
+    <div class="card">
+      <div id="apiStatus" class="api-status disconnected">
+        <span class="status-dot"></span>
+        <span id="apiStatusText">Connecting to backend...</span>
+      </div>
+    </div>
+
+    <!-- Configuration -->
+    <div class="card">
+      <h2>Configuration</h2>
+      <div class="config-section">
+        <h3>Zoom SDK Credentials</h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label>SDK Key / Client ID</label>
+            <input type="text" id="sdkKey" placeholder="Your Zoom SDK Key">
+          </div>
+          <div class="form-group">
+            <label>SDK Secret / Client Secret</label>
+            <input type="password" id="sdkSecret" placeholder="Your Zoom SDK Secret">
+          </div>
+        </div>
+        <p style="font-size: 11px; color: #f44336; margin-top: 8px;">
+          ⚠️ Requires <strong>Meeting SDK App</strong> type (not JWT App).<br>
+          Create at: <a href="https://marketplace.zoom.us/" target="_blank" style="color: #2d8cff;">Zoom Marketplace → Build App → Meeting SDK</a>
+        </p>
+      </div>
+    </div>
+
+    <!-- Join Meeting -->
+    <div class="card">
+      <h2>Join Meeting</h2>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Meeting Number</label>
+          <input type="text" id="meetingNumber" placeholder="123-456-789">
+        </div>
+        <div class="form-group">
+          <label>Passcode</label>
+          <input type="text" id="passcode" placeholder="Meeting passcode">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Your Name</label>
+        <input type="text" id="displayName" placeholder="Caption Recorder" value="Caption Recorder">
+      </div>
+      <div class="form-group">
+        <label>Role</label>
+        <select id="role">
+          <option value="1">Host</option>
+          <option value="0" selected>Attendee</option>
+        </select>
+      </div>
+      <button id="joinBtn" class="btn btn-primary" onclick="joinMeeting()">Join Meeting</button>
+    </div>
+
+    <!-- Status & Controls -->
+    <div class="card" id="statusCard" style="display: none;">
+      <h2>Meeting Status</h2>
+      <div id="meetingStatus" class="status info">Not in meeting</div>
+      <div id="retrySection" style="display: none; margin-top: 12px;">
+        <p style="color: #888; font-size: 13px; margin-bottom: 8px;">Meeting not started yet. Would you like to keep trying?</p>
+        <div style="display: flex; gap: 8px;">
+          <button id="retryBtn" class="btn btn-primary" onclick="retryJoinMeeting()">Retry Join</button>
+          <button id="cancelRetryBtn" class="btn btn-danger" onclick="cancelRetry()">Cancel</button>
+        </div>
+        <div id="autoRetryStatus" style="display: none; margin-top: 8px; color: #64b5f6; font-size: 12px;">
+          Auto-retrying in <span id="retryCountdown">10</span> seconds...
+        </div>
+      </div>
+      <button id="leaveBtn" class="btn btn-danger" onclick="leaveMeeting()" style="display: none;">Leave Meeting</button>
+    </div>
+
+    <!-- Captions Log -->
+    <div class="card">
+      <h2>Captured Captions</h2>
+      <div class="stats" style="margin-bottom: 16px;">
+        <div class="stat-item">
+          <div class="stat-value" id="captionCount">0</div>
+          <div class="stat-label">Captions</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value" id="meetingCount">0</div>
+          <div class="stat-label">Meetings</div>
+        </div>
+      </div>
+      <div class="captions-log" id="captionsLog">
+        <div style="color: #555; text-align: center; padding: 20px;">
+          Join a meeting to start capturing captions...
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Zoom SDK Container -->
+  <div id="zoom-container"></div>
+
+  <script>
+    // Configuration
+    let meetingId = null;
+    let ws = null;
+    let captionCount = 0;
+    let retryTimer = null;
+    let retryCountdown = 10;
+    let storedJoinParams = null;
+
+    // API endpoints
+    const HTTP_API = 'http://localhost:8768/api';
+    const WS_URL = 'ws://localhost:8767';
+
+    // Load configuration from backend
+    async function loadConfig() {
+      try {
+        const response = await fetch(`${HTTP_API}/config`);
+        if (response.ok) {
+          const config = await response.json();
+          console.log('Loaded config from backend');
+
+          // Set default values from backend
+          if (config.sdkKey) document.getElementById('sdkKey').value = config.sdkKey;
+          if (config.sdkSecret) document.getElementById('sdkSecret').value = config.sdkSecret;
+          if (config.meetingNumber) document.getElementById('meetingNumber').value = formatMeetingNumber(config.meetingNumber);
+          if (config.password) document.getElementById('passcode').value = config.password;
+          if (config.displayName) document.getElementById('displayName').value = config.displayName;
+
+          return true;
+        }
+      } catch (error) {
+        console.log('Could not load config from backend:', error);
+      }
+      return false;
+    }
+
+    function formatMeetingNumber(number) {
+      const cleaned = number.replace(/\D/g, '');
+      if (cleaned.length === 11) {
+        return `${cleaned.slice(0, 3)}-${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
+      }
+      return cleaned;
+    }
+
+    // Initialize WebSocket connection
+    function initWebSocket() {
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        console.log('WebSocket connected');
+        updateApiStatus(true);
+        loadStats();
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket disconnected');
+        updateApiStatus(false);
+        // Attempt to reconnect after 3 seconds
+        setTimeout(initWebSocket, 3000);
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        updateApiStatus(false);
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        handleWebSocketMessage(data);
+      };
+    }
+
+    function updateApiStatus(connected) {
+      const statusEl = document.getElementById('apiStatus');
+      const textEl = document.getElementById('apiStatusText');
+
+      if (connected) {
+        statusEl.className = 'api-status connected';
+        textEl.textContent = 'Connected to backend';
+      } else {
+        statusEl.className = 'api-status disconnected';
+        textEl.textContent = 'Disconnected from backend - retrying...';
+      }
+    }
+
+    function handleWebSocketMessage(data) {
+      switch (data.type) {
+        case 'meeting_created':
+          meetingId = data.meetingId;
+          console.log('Meeting created:', meetingId);
+          break;
+        case 'caption_received':
+          captionCount++;
+          document.getElementById('captionCount').textContent = captionCount;
+          break;
+        case 'meetings':
+          document.getElementById('meetingCount').textContent = data.meetings.length;
+          break;
+        case 'stats':
+          document.getElementById('meetingCount').textContent = data.meetings || 0;
+          break;
+      }
+    }
+
+    function sendWebSocketMessage(data) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(data));
+      }
+    }
+
+    function loadStats() {
+      sendWebSocketMessage({ type: 'get_meetings' });
+    }
+
+    // Generate JWT token for Zoom SDK (matching demo implementation)
+    function generateJWT(sdkKey, sdkSecret, meetingNumber, role = 0) {
+      const iat = Math.floor(Date.now() / 1000);
+      const exp = iat + 48 * 3600; // 48 hours max
+
+      const header = { alg: 'HS256', typ: 'JWT' };
+      const payload = {
+        appKey: sdkKey,
+        sdkKey: sdkKey,
+        mn: String(meetingNumber).replace(/\s/g, ''),
+        role: Number(role),
+        iat: iat,
+        exp: exp,
+        tokenExp: exp
+      };
+
+      const encodedHeader = base64UrlEncode(JSON.stringify(header));
+      const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+
+      const signature = CryptoJS.HmacSHA256(
+        encodedHeader + '.' + encodedPayload,
+        sdkSecret
+      ).toString(CryptoJS.enc.Base64url);
+
+      return encodedHeader + '.' + encodedPayload + '.' + signature;
+    }
+
+    function base64UrlEncode(str) {
+      return btoa(str)
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+    }
+
+    // Wait for Zoom SDK to load
+    function waitForZoomSDK() {
+      return new Promise((resolve, reject) => {
+        const checkInterval = setInterval(() => {
+          if (typeof ZoomMtg !== 'undefined') {
+            clearInterval(checkInterval);
+            console.log('Zoom SDK loaded');
+            resolve();
+          }
+        }, 100);
+
+        // Timeout after 10 seconds
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          reject(new Error('Zoom SDK failed to load'));
+        }, 10000);
+      });
+    }
+
+    // Initialize Zoom SDK
+    async function initZoomSDK() {
+      try {
+        // Use absolute URL with origin (like demo)
+        const resourceUrl = window.location.origin + '/node_modules/@zoom/meetingsdk/dist/lib';
+        ZoomMtg.setZoomJSLib(resourceUrl, '/av');
+
+        // Pre-load WASM
+        ZoomMtg.preLoadWasm();
+        ZoomMtg.prepareWebSDK();
+
+        console.log('Zoom SDK prepared');
+        return true;
+      } catch (error) {
+        console.error('Init error:', error);
+        return false;
+      }
+    }
+
+    // Join meeting
+    async function joinMeeting() {
+      const sdkKey = document.getElementById('sdkKey').value.trim();
+      const sdkSecret = document.getElementById('sdkSecret').value.trim();
+      const meetingNumber = document.getElementById('meetingNumber').value.replace(/-/g, '').trim();
+      const passcode = document.getElementById('passcode').value.trim();
+      const displayName = document.getElementById('displayName').value.trim();
+      const role = parseInt(document.getElementById('role').value);
+
+      if (!sdkKey || !sdkSecret) {
+        alert('Please enter your Zoom SDK Key and Secret');
+        return;
+      }
+
+      if (!meetingNumber) {
+        alert('Please enter a meeting number');
+        return;
+      }
+
+      // Disable join button
+      document.getElementById('joinBtn').disabled = true;
+      document.getElementById('joinBtn').textContent = 'Connecting...';
+
+      try {
+        // Make sure Zoom SDK is loaded
+        await waitForZoomSDK();
+
+        // Prepare SDK
+        await initZoomSDK();
+
+        // Create meeting record
+        sendWebSocketMessage({
+          type: 'meeting',
+          meetingNumber: meetingNumber,
+          topic: `Meeting ${meetingNumber}`,
+          hostName: displayName
+        });
+
+        // Wait a bit for meeting creation
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Generate JWT token
+        console.log('Generating JWT with:', { sdkKey: sdkKey.substring(0, 10) + '...', meetingNumber, role });
+        const token = generateJWT(sdkKey, sdkSecret, meetingNumber, role);
+        console.log('JWT generated:', token.substring(0, 50) + '...' + token.substring(token.length - 50));
+
+        // Initialize and join
+        ZoomMtg.init({
+          leaveUrl: window.location.href,
+          isSupportAV: true,
+          success: () => {
+            console.log('Zoom SDK initialized, joining meeting...');
+
+            // Set up caption listener before joining
+            // This event handles both closed captions and live transcription
+            ZoomMtg.inMeetingServiceListener('onReceiveTranscriptionMsg', (data) => {
+              console.log('Caption received:', data);
+              handleCaption(data);
+            });
+
+            // Join the meeting
+            ZoomMtg.join({
+              sdkKey: sdkKey,
+              signature: token,
+              meetingNumber: String(meetingNumber),
+              userName: displayName,
+              passWord: passcode,
+              success: () => {
+                console.log('Joined meeting successfully');
+                document.getElementById('statusCard').style.display = 'block';
+                document.getElementById('meetingStatus').className = 'status success';
+                document.getElementById('meetingStatus').textContent = 'Connected to meeting ' + meetingNumber;
+                document.getElementById('zoom-container').classList.add('active');
+                document.getElementById('leaveBtn').style.display = 'block';
+                document.getElementById('retrySection').style.display = 'none';
+                clearRetryTimer();
+              },
+              error: (error) => {
+                console.error('Join error:', error);
+                const errorCode = error.errorCode || error.type;
+                const errorMessage = error.errorMessage || error.reason || JSON.stringify(error);
+
+                // Error Code 3: Meeting not started or doesn't exist
+                if (errorCode === 3 || errorMessage.includes('3')) {
+                  handleMeetingNotStarted({
+                    sdkKey,
+                    sdkSecret,
+                    meetingNumber,
+                    passcode,
+                    displayName,
+                    role
+                  });
+                } else {
+                  // Other errors - show alert and reset button
+                  alert('Failed to join meeting: ' + errorMessage);
+                  document.getElementById('joinBtn').disabled = false;
+                  document.getElementById('joinBtn').textContent = 'Join Meeting';
+                }
+              }
+            });
+          },
+          error: (error) => {
+            console.error('Zoom SDK init error:', error);
+            alert('Failed to initialize Zoom SDK: ' + (error.errorMessage || JSON.stringify(error)));
+            document.getElementById('joinBtn').disabled = false;
+            document.getElementById('joinBtn').textContent = 'Join Meeting';
+          }
+        });
+
+      } catch (error) {
+        console.error('Join error:', error);
+        alert('Error joining meeting: ' + error.message);
+        document.getElementById('joinBtn').disabled = false;
+        document.getElementById('joinBtn').textContent = 'Join Meeting';
+      }
+    }
+
+    // Handle meeting not started (Error Code 3)
+    async function handleMeetingNotStarted(params) {
+      console.log('Meeting not started, offering retry...');
+
+      // Store join parameters for retry
+      storedJoinParams = params;
+
+      // Update UI
+      document.getElementById('statusCard').style.display = 'block';
+      document.getElementById('meetingStatus').className = 'status info';
+      document.getElementById('meetingStatus').innerHTML = `
+        <div style="font-size: 14px;">⏳ Meeting not yet started</div>
+        <div style="font-size: 12px; color: #888; margin-top: 4px;">Meeting ID: ${params.meetingNumber}</div>
+      `;
+      document.getElementById('retrySection').style.display = 'block';
+      document.getElementById('leaveBtn').style.display = 'none';
+
+      // Start auto-retry countdown
+      startAutoRetry();
+    }
+
+    // Start auto-retry with countdown
+    function startAutoRetry() {
+      retryCountdown = 10;
+
+      // Show countdown
+      const countdownEl = document.getElementById('retryCountdown');
+      const statusEl = document.getElementById('autoRetryStatus');
+      countdownEl.textContent = retryCountdown;
+      statusEl.style.display = 'block';
+
+      // Start countdown timer
+      retryTimer = setInterval(() => {
+        retryCountdown--;
+        countdownEl.textContent = retryCountdown;
+
+        if (retryCountdown <= 0) {
+          clearInterval(retryTimer);
+          statusEl.textContent = 'Retrying now...';
+          // Auto-retry
+          setTimeout(() => {
+            retryJoinMeeting();
+          }, 500);
+        }
+      }, 1000);
+    }
+
+    // Manual retry
+    async function retryJoinMeeting() {
+      if (!storedJoinParams) {
+        alert('No stored meeting information. Please try joining again.');
+        resetJoinButton();
+        return;
+      }
+
+      clearRetryTimer();
+
+      const { sdkKey, sdkSecret, meetingNumber, passcode, displayName, role } = storedJoinParams;
+
+      // Update status
+      document.getElementById('autoRetryStatus').textContent = 'Attempting to join...';
+      document.getElementById('autoRetryStatus').style.display = 'block';
+
+      try {
+        // Generate JWT token
+        const token = generateJWT(sdkKey, sdkSecret, meetingNumber, role);
+        await performJoin(sdkKey, sdkSecret, meetingNumber, passcode, displayName, role, token);
+      } catch (error) {
+        console.error('Retry error:', error);
+        // If still Error Code 3, restart countdown
+        if (error.message && error.message.includes('Error Code: 3')) {
+          startAutoRetry();
+        } else {
+          alert('Failed to join: ' + error.message);
+          resetJoinButton();
+        }
+      }
+    }
+
+    // Cancel retry
+    function cancelRetry() {
+      clearRetryTimer();
+      resetJoinButton();
+      document.getElementById('statusCard').style.display = 'none';
+    }
+
+    // Clear retry timer
+    function clearRetryTimer() {
+      if (retryTimer) {
+        clearInterval(retryTimer);
+        retryTimer = null;
+      }
+      document.getElementById('autoRetryStatus').style.display = 'none';
+    }
+
+    // Reset join button
+    function resetJoinButton() {
+      document.getElementById('joinBtn').disabled = false;
+      document.getElementById('joinBtn').textContent = 'Join Meeting';
+      document.getElementById('retrySection').style.display = 'none';
+      storedJoinParams = null;
+    }
+
+    // Perform the actual join (extracted for retry)
+    async function performJoin(sdkKey, sdkSecret, meetingNumber, passcode, displayName, role, token) {
+      return new Promise((resolve, reject) => {
+        // Initialize and join
+        ZoomMtg.init({
+          leaveUrl: window.location.href,
+          isSupportAV: true,
+          success: () => {
+            console.log('Zoom SDK initialized, joining meeting...');
+
+            // Set up caption listener before joining
+            ZoomMtg.inMeetingServiceListener('onReceiveTranscriptionMsg', (data) => {
+              console.log('Caption received:', data);
+              handleCaption(data);
+            });
+
+            // Join the meeting
+            ZoomMtg.join({
+              sdkKey: sdkKey,
+              signature: token,
+              meetingNumber: String(meetingNumber),
+              userName: displayName,
+              passWord: passcode,
+              success: () => {
+                console.log('Joined meeting successfully');
+                document.getElementById('statusCard').style.display = 'block';
+                document.getElementById('meetingStatus').className = 'status success';
+                document.getElementById('meetingStatus').textContent = 'Connected to meeting ' + meetingNumber;
+                document.getElementById('zoom-container').classList.add('active');
+                document.getElementById('leaveBtn').style.display = 'block';
+                document.getElementById('retrySection').style.display = 'none';
+                clearRetryTimer();
+                resolve();
+              },
+              error: (error) => {
+                const errorCode = error.errorCode || error.type;
+                const errorMessage = error.errorMessage || error.reason || JSON.stringify(error);
+                console.error('Join error:', error);
+
+                // Return error for caller to handle
+                reject(new Error(errorMessage + (errorCode ? ` (Error Code: ${errorCode})` : '')));
+              }
+            });
+          },
+          error: (error) => {
+            const errorMessage = error.errorMessage || error.reason || JSON.stringify(error);
+            console.error('Zoom SDK init error:', error);
+            reject(new Error('Init failed: ' + errorMessage));
+          }
+        });
+      });
+    }
+
+    // Handle caption
+    function handleCaption(data) {
+      // Parse caption data (may be string or object)
+      let captionData = data;
+      if (typeof data === 'string') {
+        try {
+          captionData = JSON.parse(data);
+        } catch (_) {
+          captionData = { text: data };
+        }
+      }
+
+      // Extract text and speaker from various possible fields
+      const text = captionData.text || captionData.captionMsg || captionData.msg || captionData.message || captionData.ttstext || '';
+      const speaker = captionData.displayName || captionData.speakerName || captionData.speaker || captionData.userName || captionData.senderName || 'Unknown';
+
+      if (!text) return;
+
+      const caption = {
+        meetingId: meetingId,
+        speaker: speaker,
+        text: text,
+        captionType: captionData.captionType || captionData.type || 'transcription'
+      };
+
+      // Send to backend
+      sendWebSocketMessage({
+        type: 'caption',
+        ...caption
+      });
+
+      // Add to log
+      addCaptionToLog(caption);
+    }
+
+    // Add caption to on-screen log
+    function addCaptionToLog(caption) {
+      const log = document.getElementById('captionsLog');
+      const time = new Date().toLocaleTimeString();
+
+      // Clear placeholder
+      if (log.querySelector('div[style*="text-align: center"]')) {
+        log.innerHTML = '';
+      }
+
+      const item = document.createElement('div');
+      item.className = 'caption-item';
+      item.innerHTML = `
+        <div class="caption-time">${time}</div>
+        <div class="caption-speaker">${caption.speaker}</div>
+        <div class="caption-text">${caption.text}</div>
+      `;
+
+      log.insertBefore(item, log.firstChild);
+
+      // Keep only last 50 captions in view
+      while (log.children.length > 50) {
+        log.removeChild(log.lastChild);
+      }
+    }
+
+    // Leave meeting
+    function leaveMeeting() {
+      if (confirm('Are you sure you want to leave the meeting?')) {
+        ZoomMtg.leaveMeeting();
+
+        if (meetingId) {
+          sendWebSocketMessage({
+            type: 'end_meeting',
+            meetingId: meetingId
+          });
+        }
+
+        document.getElementById('statusCard').style.display = 'none';
+        document.getElementById('zoom-container').classList.remove('active');
+        document.getElementById('joinBtn').disabled = false;
+        document.getElementById('joinBtn').textContent = 'Join Meeting';
+      }
+    }
+
+    // Initialize on load
+    window.addEventListener('load', async () => {
+      initWebSocket();
+
+      // Load config from backend (with .env values)
+      const loadedFromBackend = await loadConfig();
+
+      // Fallback to localStorage if backend config is empty
+      if (!loadedFromBackend) {
+        const savedSdkKey = localStorage.getItem('zoom_sdk_key');
+        const savedSdkSecret = localStorage.getItem('zoom_sdk_secret');
+        const savedMeetingNumber = localStorage.getItem('zoom_meeting_number');
+        const savedPassword = localStorage.getItem('zoom_meeting_password');
+
+        if (savedSdkKey) document.getElementById('sdkKey').value = savedSdkKey;
+        if (savedSdkSecret) document.getElementById('sdkSecret').value = savedSdkSecret;
+        if (savedMeetingNumber) document.getElementById('meetingNumber').value = savedMeetingNumber;
+        if (savedPassword) document.getElementById('passcode').value = savedPassword;
+      }
+    });
+
+    // Save credentials to localStorage on change
+    document.getElementById('sdkKey').addEventListener('change', (e) => {
+      localStorage.setItem('zoom_sdk_key', e.target.value);
+    });
+
+    document.getElementById('sdkSecret').addEventListener('change', (e) => {
+      localStorage.setItem('zoom_sdk_secret', e.target.value);
+    });
+
+    document.getElementById('meetingNumber').addEventListener('change', (e) => {
+      localStorage.setItem('zoom_meeting_number', e.target.value);
+    });
+
+    document.getElementById('passcode').addEventListener('change', (e) => {
+      localStorage.setItem('zoom_meeting_password', e.target.value);
+    });
+  </script>
+</body>
+</html>
