@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qwen3-TTS 快速响应</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+      background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+      min-height: 100vh;
+      color: white;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 {
+      margin-bottom: 30px;
+      font-size: 28px;
+      background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .container {
+      width: 100%;
+      max-width: 700px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 20px;
+      padding: 25px;
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .status-panel {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 20px;
+      font-size: 13px;
+    }
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #444;
+      transition: all 0.3s;
+    }
+    .status-dot.active { background: #00d2ff; box-shadow: 0 0 10px #00d2ff; }
+    .status-dot.working { background: #ffa500; animation: pulse 1s infinite; }
+    .status-dot.success { background: #00ff88; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+    .timing-display {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .timing-item {
+      text-align: center;
+      padding: 8px 10px;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 10px;
+      min-width: 65px;
+      flex: 0 0 auto;
+    }
+    .timing-value {
+      font-size: 16px;
+      font-weight: bold;
+      color: #00d2ff;
+    }
+    .timing-label {
+      font-size: 9px;
+      color: rgba(255, 255, 255, 0.6);
+      margin-top: 2px;
+    }
+    .input-area {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    #question-input {
+      flex: 1;
+      padding: 14px 18px;
+      border: none;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+      font-size: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      transition: all 0.3s;
+    }
+    #question-input:focus {
+      outline: none;
+      border-color: #00d2ff;
+      background: rgba(255, 255, 255, 0.15);
+    }
+    #question-input::placeholder {
+      color: rgba(255, 255, 255, 0.4);
+    }
+    #send-btn {
+      padding: 14px 28px;
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #00d2ff, #3a7bd5);
+      color: white;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    #send-btn:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 20px rgba(0, 210, 255, 0.4);
+    }
+    #send-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .response-area {
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 12px;
+      padding: 15px;
+      min-height: 80px;
+      max-height: 150px;
+      overflow-y: auto;
+      font-size: 15px;
+      line-height: 1.6;
+      color: rgba(255, 255, 255, 0.9);
+    }
+    .response-area.placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(255, 255, 255, 0.4);
+      font-style: italic;
+    }
+    .audio-visualizer {
+      height: 60px;
+      margin-top: 15px;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      padding: 0 20px;
+      overflow: hidden;
+    }
+    .bar {
+      width: 4px;
+      height: 10px;
+      background: linear-gradient(to top, #00d2ff, #3a7bd5);
+      border-radius: 2px;
+      transition: height 0.05s;
+    }
+    .audio-visualizer.playing .bar {
+      animation: wave 0.5s ease-in-out infinite;
+    }
+    .audio-visualizer.playing .bar:nth-child(odd) {
+      animation-delay: 0.1s;
+    }
+    @keyframes wave {
+      0%, 100% { height: 10px; }
+      50% { height: 40px; }
+    }
+    .log-panel {
+      margin-top: 20px;
+      max-height: 150px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 11px;
+      background: rgba(0, 0, 0, 0.4);
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .log-entry {
+      padding: 3px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .log-entry:last-child { border-bottom: none; }
+    .log-info { color: #00d2ff; }
+    .log-success { color: #00ff88; }
+    .log-warn { color: #ffa500; }
+    .log-error { color: #ff4444; }
+  </style>
+</head>
+<body>
+  <h1>🚀 Qwen3-TTS 快速响应</h1>
+
+  <div class="container">
+    <div class="status-panel">
+      <div class="status-item">
+        <div class="status-dot" id="ws-dot"></div>
+        <span id="ws-status">连接中</span>
+      </div>
+      <div class="status-item">
+        <div class="status-dot" id="llm-dot"></div>
+        <span id="llm-status">LLM</span>
+      </div>
+      <div class="status-item">
+        <div class="status-dot" id="tts-dot"></div>
+        <span id="tts-status">TTS</span>
+      </div>
+      <div class="status-item">
+        <div class="status-dot" id="audio-dot"></div>
+        <span id="audio-status">音频</span>
+      </div>
+    </div>
+
+    <div class="timing-display">
+      <div class="timing-item">
+        <div class="timing-value" id="first-char-time">--</div>
+        <div class="timing-label">首字符 (秒)</div>
+      </div>
+      <div class="timing-item">
+        <div class="timing-value" id="llm-time">--</div>
+        <div class="timing-label">LLM总时 (秒)</div>
+      </div>
+      <div class="timing-item">
+        <div class="timing-value" id="first-audio-time">--</div>
+        <div class="timing-label">首音频 (秒)</div>
+      </div>
+      <div class="timing-item">
+        <div class="timing-value" id="first-play-time">--</div>
+        <div class="timing-label">首播放 (秒)</div>
+      </div>
+      <div class="timing-item">
+        <div class="timing-value" id="total-time">--</div>
+        <div class="timing-label">总计 (秒)</div>
+      </div>
+      <div class="timing-item">
+        <div class="timing-value" id="chunk-count">--</div>
+        <div class="timing-label">音频块</div>
+      </div>
+      <div class="timing-item">
+        <div class="timing-value" id="sentence-count">--</div>
+        <div class="timing-label">句子数</div>
+      </div>
+      <div class="timing-item">
+        <div class="timing-value" id="char-count">--</div>
+        <div class="timing-label">字符数</div>
+      </div>
+      <div class="timing-item">
+        <div class="timing-value" id="audio-duration">--</div>
+        <div class="timing-label">音频总长 (秒)</div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <input type="text" id="question-input" placeholder="输入问题..." />
+      <button id="send-btn">发送</button>
+    </div>
+
+    <div class="response-area placeholder" id="response-area">
+      AI 回答将显示在这里
+    </div>
+
+    <div class="audio-visualizer" id="visualizer">
+      <!-- 动态生成条形 -->
+    </div>
+
+    <div class="log-panel" id="log-panel"></div>
+  </div>
+
+  <script>
+    // DOM 元素
+    const wsDot = document.getElementById('ws-dot');
+    const wsStatus = document.getElementById('ws-status');
+    const llmDot = document.getElementById('llm-dot');
+    const llmStatus = document.getElementById('llm-status');
+    const ttsDot = document.getElementById('tts-dot');
+    const ttsStatus = document.getElementById('tts-status');
+    const audioDot = document.getElementById('audio-dot');
+    const audioStatus = document.getElementById('audio-status');
+    const questionInput = document.getElementById('question-input');
+    const sendBtn = document.getElementById('send-btn');
+    const responseArea = document.getElementById('response-area');
+    const logPanel = document.getElementById('log-panel');
+    const visualizer = document.getElementById('visualizer');
+
+    // 时间显示
+    const firstCharTimeEl = document.getElementById('first-char-time');
+    const llmTimeEl = document.getElementById('llm-time');
+    const firstAudioTimeEl = document.getElementById('first-audio-time');
+    const firstPlayTimeEl = document.getElementById('first-play-time');
+    const totalTimeEl = document.getElementById('total-time');
+    const chunkCountEl = document.getElementById('chunk-count');
+    const sentenceCountEl = document.getElementById('sentence-count');
+    const charCountEl = document.getElementById('char-count');
+    const audioDurationEl = document.getElementById('audio-duration');
+
+    // 统计数据
+    let startTime = null;
+    let firstPlayRecorded = false;
+
+    // 初始化可视化条
+    for (let i = 0; i < 40; i++) {
+      const bar = document.createElement('div');
+      bar.className = 'bar';
+      visualizer.appendChild(bar);
+    }
+
+    // 日志
+    function log(msg, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = `log-entry log-${type}`;
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logPanel.appendChild(entry);
+      logPanel.scrollTop = logPanel.scrollHeight;
+    }
+
+    // 全局状态
+    let ws = null;
+    let audioContext = null;
+    let audioQueue = [];
+    let isPlaying = false;
+    let currentSource = null;
+    let nextStartTime = 0;
+    let pendingChunks = [];
+
+    // 初始化 AudioContext
+    function initAudioContext() {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate: 24000
+        });
+      }
+      if (audioContext.state === 'suspended') {
+        audioContext.resume();
+      }
+    }
+
+    // 音频队列调度
+    function scheduleAudio(audioBuffer, chunkIndex) {
+      if (!audioContext) {
+        log('AudioContext 未初始化', 'error');
+        return;
+      }
+
+      try {
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+
+        // 连接到输出设备
+        source.connect(audioContext.destination);
+
+        // 添加到队列
+        if (!isPlaying) {
+          nextStartTime = audioContext.currentTime;
+          isPlaying = true;
+          audioDot.classList.add('working');
+          audioStatus.textContent = '播放中';
+          visualizer.classList.add('playing');
+
+          // 记录首次播放时间
+          if (!firstPlayRecorded && startTime) {
+            const firstPlayDelay = (Date.now() - startTime) / 1000;
+            firstPlayTimeEl.textContent = firstPlayDelay.toFixed(3);
+            log(`🔊 首次播放 (${firstPlayDelay.toFixed(3)}s)`, 'success');
+            firstPlayRecorded = true;
+          }
+        }
+
+        source.start(nextStartTime);
+        nextStartTime += audioBuffer.duration;
+
+        source.onended = () => {
+          // 检查是否所有音频都播放完成
+          if (audioContext.currentTime >= nextStartTime - 0.1) {
+            isPlaying = false;
+            audioDot.classList.remove('working');
+            audioDot.classList.add('success');
+            audioStatus.textContent = '完成';
+            visualizer.classList.remove('playing');
+            log(`✓ 音频播放完成`, 'success');
+          }
+        };
+
+        currentSource = source;
+        log(`🔵 播放音频块 ${chunkIndex} (${audioBuffer.duration.toFixed(2)}s)`, 'info');
+      } catch (error) {
+        log(`音频调度错误: ${error.message}`, 'error');
+      }
+    }
+
+    // 处理音频块
+    async function handleAudioChunk(audioB64, sampleRate, chunkIndex) {
+      try {
+        initAudioContext();
+
+        log(`🔧 解码音频块 ${chunkIndex}, 大小: ${audioB64.length} 字符, 采样率: ${sampleRate}Hz`, 'info');
+
+        // 解码 base64
+        const binaryString = atob(audioB64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        log(`🔧 解码后: ${bytes.length} 字节`, 'info');
+
+        // 解码音频
+        const audioBuffer = await audioContext.decodeAudioData(bytes.buffer);
+
+        log(`✅ 音频解码成功: ${audioBuffer.duration.toFixed(2)}s, ${audioBuffer.numberOfChannels} 声道`, 'success');
+
+        // 调度播放
+        scheduleAudio(audioBuffer, chunkIndex);
+
+      } catch (error) {
+        log(`❌ 音频解码错误: ${error.message}`, 'error');
+        console.error('解码错误详情:', error);
+      }
+    }
+
+    // WebSocket 连接
+    function connectWebSocket() {
+      log('连接 WebSocket: ws://localhost:8770');
+
+      ws = new WebSocket('ws://localhost:8770');
+
+      ws.onopen = () => {
+        log('✓ WebSocket 已连接', 'success');
+        wsDot.classList.add('active');
+        wsStatus.textContent = '已连接';
+      };
+
+      ws.onclose = () => {
+        log('✗ WebSocket 连接关闭', 'error');
+        wsDot.classList.remove('active');
+        wsStatus.textContent = '未连接';
+        setTimeout(() => {
+          log('3秒后重连...', 'warn');
+          connectWebSocket();
+        }, 3000);
+      };
+
+      ws.onerror = () => {
+        log('✗ WebSocket 错误', 'error');
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          switch (data.type) {
+            case 'start':
+              startTime = data.timestamp * 1000;
+              firstPlayRecorded = false;
+              log(`🚀 开始处理: ${data.question}`, 'info');
+              llmDot.classList.add('working');
+              llmStatus.textContent = '生成中';
+              break;
+
+            case 'llm_delta':
+              // 流式文本更新
+              responseArea.classList.remove('placeholder');
+              responseArea.textContent = data.full_text;
+              llmDot.classList.add('working');
+              llmStatus.textContent = '生成中';
+
+              // 显示字符计数
+              charCountEl.textContent = data.full_text.length;
+              break;
+
+            case 'first_char':
+              // 首字符时间
+              const firstCharDelay = (data.timestamp * 1000 - startTime) / 1000;
+              firstCharTimeEl.textContent = firstCharDelay.toFixed(3);
+              log(`📝 首字符 (${firstCharDelay.toFixed(3)}s): ${data.char}`, 'info');
+              break;
+
+            case 'llm_done':
+              log(`📝 LLM 完成 (${data.llm_time.toFixed(2)}s)`, 'success');
+              llmTimeEl.textContent = data.llm_time.toFixed(2);
+              sentenceCountEl.textContent = data.sentence_count || 0;
+              llmDot.classList.remove('working');
+              llmDot.classList.add('success');
+              llmStatus.textContent = '完成';
+
+              responseArea.classList.remove('placeholder');
+              responseArea.textContent = data.text;
+
+              ttsDot.classList.add('working');
+              ttsStatus.textContent = '生成中';
+              break;
+
+            case 'first_audio':
+              log(`🔊 首个音频块 (${data.delay.toFixed(2)}s)`, 'success');
+              firstAudioTimeEl.textContent = data.delay.toFixed(2);
+              break;
+
+            case 'audio_chunk':
+              const currentChunk = parseInt(chunkCountEl.textContent || 0) + 1;
+              chunkCountEl.textContent = currentChunk;
+              await handleAudioChunk(data.audio, data.sample_rate, currentChunk);
+              break;
+
+            case 'done':
+              log(`✓ 完成 - 总计: ${data.total_time.toFixed(2)}s, 块: ${data.total_chunks}`, 'success');
+              totalTimeEl.textContent = data.total_time.toFixed(2);
+              audioDurationEl.textContent = data.audio_duration?.toFixed(2) || '--';
+              ttsDot.classList.remove('working');
+              ttsDot.classList.add('success');
+              ttsStatus.textContent = '完成';
+              sendBtn.disabled = false;
+
+              // 更新最终文本
+              if (data.text) {
+                responseArea.textContent = data.text;
+                charCountEl.textContent = data.text.length;
+              }
+              break;
+
+            case 'pong':
+              // 心跳
+              break;
+          }
+
+        } catch (error) {
+          log(`消息解析错误: ${error.message}`, 'error');
+        }
+      };
+    }
+
+    // 发送问题
+    function sendQuestion() {
+      const question = questionInput.value.trim();
+      if (!question || !ws || ws.readyState !== WebSocket.OPEN) {
+        log('无法发送: WebSocket 未连接', 'error');
+        return;
+      }
+
+      log(`📤 发送: ${question}`, 'info');
+      sendBtn.disabled = true;
+
+      // 重置状态
+      responseArea.classList.add('placeholder');
+      responseArea.textContent = 'AI 回答将显示在这里';
+      llmDot.classList.remove('success');
+      ttsDot.classList.remove('success');
+      audioDot.classList.remove('success');
+      firstCharTimeEl.textContent = '--';
+      llmTimeEl.textContent = '--';
+      firstAudioTimeEl.textContent = '--';
+      firstPlayTimeEl.textContent = '--';
+      totalTimeEl.textContent = '--';
+      chunkCountEl.textContent = '0';
+      sentenceCountEl.textContent = '--';
+      charCountEl.textContent = '--';
+      audioDurationEl.textContent = '--';
+
+      ws.send(JSON.stringify({
+        type: 'generate',
+        question: question
+      }));
+    }
+
+    // 事件监听
+    sendBtn.addEventListener('click', () => {
+      initAudioContext();
+      sendQuestion();
+    });
+
+    questionInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        sendBtn.click();
+      }
+    });
+
+    // 启动
+    connectWebSocket();
+    log('等待用户输入...', 'info');
+
+    // 心跳
+    setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 30000);
+  </script>
+</body>
+</html>
