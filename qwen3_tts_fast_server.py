@@ -27,6 +27,17 @@ LLM_MODEL = os.getenv("LLM_MODEL", "Qwen3.5-2B-MLX-8bit")
 
 QWEN3_TTS_MODEL = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
 
+# --- Filler Audio (预录制填充音频) ---
+# 这些是简短的延迟填充音频，可以显著降低首音频延迟
+# 使用 Qwen-TTS 预生成并转为 base64
+FILLER_AUDIO = {
+    "let_me_see": "",  # "Let me see..." (~0.5s)
+    "let_me_check": "",  # "Let me check..." (~0.5s)
+    "thinking": "",  # "Hmm..." (~0.3s)
+    "one_moment": "",  # "One moment..." (~0.5s)
+    "give_me_sec": "",  # "Just a second..." (~0.6s)
+}
+
 MLX_ENV_PATH = Path(__file__).parent / "mlx_audio_env"
 QWEN_TTS_PATH = Path(__file__).parent / "qwen3-tts-apple-silicon"
 CAPTIONS_DB_PATH = Path(__file__).parent / "captions.db"
@@ -37,6 +48,40 @@ else:
     TTS_PYTHON = sys.executable
 
 _meeting_context_cache = None
+_filler_audio_cache = {}  # Cache for loaded filler audio files
+
+
+def load_filler_audio():
+    """Load pre-recorded filler audio files from disk"""
+    global _filler_audio_cache
+    filler_dir = Path(__file__).parent / "filler_audio"
+    if not filler_dir.exists():
+        return
+
+    for name, _ in FILLER_AUDIO.items():
+        audio_path = filler_dir / f"{name}.wav"
+        if audio_path.exists():
+            with open(audio_path, "rb") as f:
+                audio_data = f.read()
+                _filler_audio_cache[name] = base64.b64encode(audio_data).decode()
+                log.info(f"[Filler] Loaded {name}")
+
+
+def select_filler_audio(question: str) -> str:
+    """Select appropriate filler audio based on question type"""
+    q_lower = question.lower()
+
+    # Question type matching
+    if any(w in q_lower for w in ["what", "tell me", "explain", "describe", "how"]):
+        return "let_me_see"
+    elif any(w in q_lower for w in ["find", "search", "look", "check", "where"]):
+        return "let_me_check"
+    elif any(w in q_lower for w in ["calculate", "compute", "math", "count"]):
+        return "thinking"
+    else:
+        # Randomly pick one to avoid monotony
+        import random
+        return random.choice(["let_me_see", "one_moment", "give_me_sec"])
 
 
 def load_meeting_context(force_reload: bool = False) -> str:
@@ -313,24 +358,142 @@ class SentenceAccumulator:
         self.buffer = ""
         self.endings = ('。', '！', '？', '.', '!', '?', '…', '\n')
 
+
+class PhraseAccumulator:
+    """更激进的短语分割器 - 按短语/从句分割，不等完整句子
+
+    分割策略:
+    - 逗号、分号、冒号后分割
+    - 连词前分割 (and, but, or, so, because...)
+    - 介词短语后分割
+    - 最小长度保护 (避免过短的片段)
+    """
+    def __init__(self, min_length: int = 8, max_length: int = 40):
+        self.buffer = ""
+        self.min_length = min_length
+        self.max_length = max_length
+
+        # 分割标记
+        self.split_before = {
+            # 连词
+            'and', 'but', 'or', 'so', 'because', 'however', 'therefore', 'meanwhile',
+            'although', 'though', 'while', 'unless', 'since', 'whereas',
+            # 中文连词
+            '但是', '而且', '因为', '所以', '不过', '虽然', '但是', '然后',
+        }
+        self.split_after = {
+            # 标点
+            ',', ';', ':', '，', '；', '：',
+            # 介词/副词结尾
+        }
+
     def add(self, text: str):
         self.buffer += text
-        sentences = []
+        phrases = []
 
-        while True:
+        while len(self.buffer) >= self.min_length:
+            # 优先按标点分割
             for i, c in enumerate(self.buffer):
-                if c in self.endings:
-                    s = self.buffer[:i+1].strip()
-                    if s: sentences.append(s)
-                    self.buffer = self.buffer[i+1:]
-                    break
+                if c in self.split_after:
+                    phrase = self.buffer[:i+1].strip()
+                    if len(phrase) >= self.min_length:
+                        phrases.append(phrase)
+                        self.buffer = self.buffer[i+1:].strip()
+                        break
             else:
-                break
+                # 没找到标点，检查连词前分割
+                words = self.buffer.split()
+                for i, word in enumerate(words[1:], 1):  # 跳过第一个词
+                    if word.lower() in self.split_before:
+                        phrase = ' '.join(words[:i]).strip()
+                        if len(phrase) >= self.min_length:
+                            phrases.append(phrase)
+                            self.buffer = ' '.join(words[i:]).strip()
+                            break
+                else:
+                    # 没找到分割点，检查是否超过最大长度
+                    if len(self.buffer) >= self.max_length:
+                        # 强制按词分割
+                        words = self.buffer.split()
+                        mid = len(words) // 2
+                        phrase = ' '.join(words[:mid]).strip()
+                        if phrase:
+                            phrases.append(phrase)
+                            self.buffer = ' '.join(words[mid:]).strip()
+                    else:
+                        # 等待更多内容
+                        break
 
-        return sentences
+        return phrases
 
     def remaining(self) -> str:
         return self.buffer.strip()
+
+
+# --- LLM 预测回答开头 ---
+# 根据问题类型预测回答的开头，提前进行 TTS
+PREDICTIVE_RESPONSES = {
+    # 问候类
+    "greeting": [
+        "Hello! ",
+        "Hi there! ",
+        "你好！",
+    ],
+    # 时间类
+    "time": [
+        "Let me check the time for you. ",
+        "The current time is ",
+        "让我查一下时间",
+    ],
+    # 天气类
+    "weather": [
+        "Let me check the weather for you. ",
+        "Regarding the weather, ",
+        "让我查看天气情况",
+    ],
+    # 计算类
+    "calculation": [
+        "Let me calculate that for you. ",
+        "Here's the calculation: ",
+        "让我来计算一下",
+    ],
+    # 定义类
+    "definition": [
+        "Let me explain that for you. ",
+        "The definition is ",
+        "让我来解释一下",
+    ],
+    # 默认
+    "default": [
+        "Let me think about that. ",
+        "Good question! ",
+        "让我想想",
+    ]
+}
+
+
+def predict_response_start(question: str) -> str:
+    """根据问题类型预测回答开头"""
+    q_lower = question.lower()
+
+    # 检测问题类型
+    if any(w in q_lower for w in ["hello", "hi", "hey", "你好", "您好"]):
+        return _random_choice(PREDICTIVE_RESPONSES["greeting"])
+    elif any(w in q_lower for w in ["time", "几点", "时间", "when"]):
+        return _random_choice(PREDICTIVE_RESPONSES["time"])
+    elif any(w in q_lower for w in ["weather", "天气", "temperature"]):
+        return _random_choice(PREDICTIVE_RESPONSES["weather"])
+    elif any(w in q_lower for w in ["calculate", "加", "减", "乘", "除", "+", "-", "*", "/"]):
+        return _random_choice(PREDICTIVE_RESPONSES["calculation"])
+    elif any(w in q_lower for w in ["what is", "define", "definition", "什么是", "定义"]):
+        return _random_choice(PREDICTIVE_RESPONSES["definition"])
+    else:
+        return _random_choice(PREDICTIVE_RESPONSES["default"])
+
+
+def _random_choice(choices: list) -> str:
+    import random
+    return random.choice(choices)
 
 
 async def handle_connection(websocket):
@@ -354,10 +517,38 @@ async def handle_connection(websocket):
 
                 yield {"type": "start", "question": question, "timestamp": time.time()}
 
+                # === Step 1: 立即发送填充音频 (如果可用) ===
+                filler_sent = False
+                filler_key = select_filler_audio(question)
+                if filler_key in _filler_audio_cache:
+                    filler_b64 = _filler_audio_cache[filler_key]
+                    # 发送填充音频
+                    yield {
+                        "type": "audio_chunk",
+                        "audio": filler_b64,
+                        "sample_rate": 24000,
+                        "duration": 0.5,  # 预估时长
+                        "is_filler": True,
+                        "timestamp": time.time()
+                    }
+                    filler_sent = True
+                    first_audio = time.time()
+                    log.info(f"[Filler] Sent '{filler_key}' in {first_audio-start:.3f}s")
+                    yield {"type": "first_audio", "delay": first_audio-start, "is_filler": True, "timestamp": time.time()}
+
+                # === Step 2: 预测性响应开头 (提前 TTS) ===
+                # 在 LLM 生成的同时，先对预测的开头进行 TTS
+                predictive_start = predict_response_start(question)
+                log.info(f"[Predict] '{predictive_start.strip()}'")
+
+                # === Step 3: 并行启动 LLM 生成 + 预测开头 TTS ===
                 context = load_meeting_context()
-                acc = SentenceAccumulator()
-                full, first_char, first_audio = "", None, None
+
+                # 使用 PhraseAccumulator 进行更激进的分割
+                acc = PhraseAccumulator(min_length=8, max_length=40)
+                full, first_char = "", None
                 chunks, dur, sent_count = 0, 0, 0
+                predictive_audio_sent = False
 
                 async for text_chunk in call_llm_stream(question, context):
                     if first_char is None and text_chunk:
@@ -367,13 +558,28 @@ async def handle_connection(websocket):
                     full += text_chunk
                     yield {"type": "llm_delta", "text": text_chunk, "full_text": full, "timestamp": time.time()}
 
-                    for s in acc.add(text_chunk):
+                    # 发送预测开头的 TTS (仅一次)
+                    if not predictive_audio_sent and len(full) > 3:
+                        predictive_audio_sent = True
+                        # 检查预测是否与实际开头匹配
+                        if predictive_start.strip() in full[:len(predictive_start)+10]:
+                            # 预测准确，发送预测音频
+                            async for audio in stream_tts(predictive_start.strip()):
+                                chunks += 1
+                                dur += audio.get("duration", 0)
+                                yield {**audio, "is_predictive": True}
+                            log.info(f"[Predict] Audio sent, matches actual response")
+                        else:
+                            log.info(f"[Predict] Skipped, doesn't match actual")
+
+                    # 使用短语分割器进行更激进的 TTS
+                    for phrase in acc.add(text_chunk):
                         sent_count += 1
-                        log.info(f"[S] {s[:30]}...")
-                        async for audio in stream_tts(s):
+                        log.info(f"[P] {phrase[:30]}...")
+                        async for audio in stream_tts(phrase):
                             chunks += 1
                             dur += audio.get("duration", 0)
-                            if first_audio is None:
+                            if not filler_sent and first_audio is None:
                                 first_audio = time.time()
                                 yield {"type": "first_audio", "delay": first_audio-start, "timestamp": time.time()}
                             yield audio
@@ -383,7 +589,7 @@ async def handle_connection(websocket):
                     async for audio in stream_tts(acc.remaining()):
                         chunks += 1
                         dur += audio.get("duration", 0)
-                        if first_audio is None:
+                        if not filler_sent and first_audio is None:
                             yield {"type": "first_audio", "delay": time.time()-start, "timestamp": time.time()}
                         yield audio
 
@@ -399,6 +605,8 @@ async def handle_connection(websocket):
                     "sentence_count": sent_count,
                     "char_count": len(full),
                     "text": full,
+                    "filler_used": filler_sent,
+                    "predictive_used": predictive_audio_sent,
                     "timestamp": time.time()
                 }
 
@@ -421,6 +629,10 @@ async def main():
     log.info("Loading context...")
     ctx = load_meeting_context()
     log.info(f"✓ Context: {len(ctx)} chars")
+
+    log.info("Loading filler audio...")
+    load_filler_audio()
+    log.info(f"✓ Filler audio: {len(_filler_audio_cache)} loaded")
 
     tts_script = create_tts_script()
     await start_tts_process(tts_script)

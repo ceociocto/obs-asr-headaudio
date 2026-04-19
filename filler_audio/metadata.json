@@ -1,0 +1,32 @@
+{
+  "let_me_see": {
+    "text": "Let me see.",
+    "duration": 1.36,
+    "sample_rate": 24000,
+    "base64": "UklGRiT/AABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQD/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA..."
+  },
+  "let_me_check": {
+    "text": "Let me check.",
+    "duration": 1.44,
+    "sample_rate": 24000,
+    "base64": "UklGRiQOAQBXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAOAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA..."
+  },
+  "thinking": {
+    "text": "Hmm.",
+    "duration": 2.64,
+    "sample_rate": 24000,
+    "base64": "UklGRiTvAQBXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQDvAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA..."
+  },
+  "one_moment": {
+    "text": "One moment.",
+    "duration": 1.36,
+    "sample_rate": 24000,
+    "base64": "UklGRiT/AABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQD/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA..."
+  },
+  "give_me_sec": {
+    "text": "Just a second.",
+    "duration": 1.52,
+    "sample_rate": 24000,
+    "base64": "UklGRiQdAQBXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAdAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA..."
+  }
+}

@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qwen3-TTS Fast Response (with Filler Audio)</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 30px;
+            width: 100%;
+            max-width: 600px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        h1 {
+            color: #fff;
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .status {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #666;
+        }
+        .status.connected { background: #4ade80; box-shadow: 0 0 10px #4ade80; }
+        .status.generating { background: #fbbf24; animation: pulse 1s infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        textarea {
+            width: 100%;
+            min-height: 100px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 12px;
+            color: #fff;
+            font-size: 1rem;
+            padding: 15px;
+            resize: vertical;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #60a5fa;
+        }
+        button {
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            color: #fff;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(59, 130, 246, 0.4);
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .metrics {
+            margin-top: 20px;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+        .metric {
+            background: rgba(0,0,0,0.3);
+            padding: 12px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #4ade80;
+        }
+        .metric-label {
+            font-size: 0.75rem;
+            color: #9ca3af;
+            margin-top: 5px;
+        }
+        .response-text {
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 12px;
+            color: #fff;
+            min-height: 60px;
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+        .filler-badge {
+            display: inline-block;
+            background: #f59e0b;
+            color: #000;
+            font-size: 0.7rem;
+            padding: 2px 8px;
+            border-radius: 10px;
+            margin-left: 8px;
+            font-weight: 600;
+        }
+        .options {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .options label {
+            color: #9ca3af;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .options input[type="checkbox"] {
+            accent-color: #3b82f6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>
+            <span class="status" id="status"></span>
+            Qwen3-TTS Fast Response
+        </h1>
+
+        <textarea id="question" placeholder="Ask me anything... e.g., 'What's the weather like?' or 'Tell me a joke'"></textarea>
+
+        <div class="options">
+            <label>
+                <input type="checkbox" id="useFiller" checked>
+                Enable filler audio (faster first audio)
+            </label>
+        </div>
+
+        <button id="send" onclick="generate()">Generate</button>
+
+        <div class="metrics">
+            <div class="metric">
+                <div class="metric-value" id="firstAudio">--</div>
+                <div class="metric-label">First Audio (s)</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="llmTime">--</div>
+                <div class="metric-label">LLM Time (s)</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="totalTime">--</div>
+                <div class="metric-label">Total (s)</div>
+            </div>
+        </div>
+
+        <div class="response-text" id="response">
+            Response will appear here...
+        </div>
+    </div>
+
+    <script>
+        const WS_URL = 'ws://localhost:8770';
+        let ws = null;
+        let audioQueue = [];
+        let isPlaying = false;
+        let audioContext = null;
+
+        function connect() {
+            ws = new WebSocket(WS_URL);
+            const status = document.getElementById('status');
+
+            ws.onopen = () => {
+                status.classList.add('connected');
+                console.log('[WS] Connected');
+            };
+
+            ws.onclose = () => {
+                status.classList.remove('connected', 'generating');
+                console.log('[WS] Disconnected, reconnecting...');
+                setTimeout(connect, 2000);
+            };
+
+            ws.onmessage = async (e) => {
+                const data = JSON.parse(e.data);
+                handleResponse(data);
+            };
+        }
+
+        async function playAudio(base64Audio, sampleRate) {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+
+            const binaryString = atob(base64Audio);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+
+            const audioBuffer = await audioContext.decodeAudioData(bytes.buffer);
+            const source = audioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioContext.destination);
+            source.start();
+        }
+
+        function handleResponse(data) {
+            const status = document.getElementById('status');
+            const response = document.getElementById('response');
+
+            switch (data.type) {
+                case 'start':
+                    status.classList.remove('connected');
+                    status.classList.add('generating');
+                    response.innerHTML = '<em>Thinking...</em>';
+                    break;
+
+                case 'first_audio':
+                    document.getElementById('firstAudio').textContent =
+                        (data.is_filler ? '~' : '') + data.delay.toFixed(2);
+                    if (data.is_filler) {
+                        document.getElementById('firstAudio').innerHTML +=
+                            '<span class="filler-badge">FILLER</span>';
+                    }
+                    break;
+
+                case 'llm_delta':
+                    response.innerHTML += data.text;
+                    response.scrollTop = response.scrollHeight;
+                    break;
+
+                case 'audio_chunk':
+                    if (document.getElementById('useFiller').checked || !data.is_filler) {
+                        playAudio(data.audio, data.sample_rate);
+                    }
+                    break;
+
+                case 'done':
+                    status.classList.remove('generating');
+                    status.classList.add('connected');
+                    document.getElementById('llmTime').textContent = data.llm_time.toFixed(2);
+                    document.getElementById('totalTime').textContent = data.total_time.toFixed(2);
+                    console.log('[Done]', data);
+                    break;
+            }
+        }
+
+        function generate() {
+            const question = document.getElementById('question').value.trim();
+            if (!question || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+            ws.send(JSON.stringify({
+                type: 'generate',
+                question: question
+            }));
+
+            // Reset metrics
+            document.getElementById('firstAudio').textContent = '--';
+            document.getElementById('llmTime').textContent = '--';
+            document.getElementById('totalTime').textContent = '--';
+        }
+
+        // Auto-connect on load
+        connect();
+    </script>
+</body>
+</html>
