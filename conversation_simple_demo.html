@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Conversation Assistant - Female Voice TTS</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #eee;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #ff6b9d, #c44569);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header .subtitle {
+            font-size: 0.9em;
+            opacity: 0.7;
+            margin-bottom: 15px;
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 16px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 20px;
+            font-size: 0.9em;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ff4444;
+        }
+
+        .status-dot.connected {
+            background: #00ff88;
+        }
+
+        .context-info {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 20px;
+            font-size: 0.9em;
+        }
+
+        .context-info h3 {
+            font-size: 1em;
+            margin-bottom: 10px;
+            color: #ff6b9d;
+        }
+
+        .chat-container {
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            min-height: 300px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 12px 16px;
+            border-radius: 12px;
+            max-width: 80%;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message.user {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin-left: auto;
+        }
+
+        .message.assistant {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .message .sender {
+            font-size: 0.8em;
+            opacity: 0.7;
+            margin-bottom: 5px;
+        }
+
+        .message .text {
+            line-height: 1.5;
+        }
+
+        .message.assistant .sender {
+            color: #ff6b9d;
+        }
+
+        .input-area {
+            display: flex;
+            gap: 10px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 10px;
+        }
+
+        .input-area input {
+            flex: 1;
+            background: rgba(255,255,255,0.1);
+            border: none;
+            border-radius: 10px;
+            padding: 15px 20px;
+            color: #fff;
+            font-size: 1em;
+            outline: none;
+        }
+
+        .input-area input::placeholder {
+            color: rgba(255,255,255,0.5);
+        }
+
+        .input-area button {
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #ff6b9d 0%, #c44569 100%);
+            border: none;
+            border-radius: 10px;
+            color: #fff;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, opacity 0.2s;
+        }
+
+        .input-area button:hover {
+            transform: scale(1.05);
+        }
+
+        .input-area button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .audio-visualizer {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            height: 40px;
+            margin-top: 20px;
+        }
+
+        .bar {
+            width: 4px;
+            background: linear-gradient(to top, #ff6b9d, #c44569);
+            border-radius: 2px;
+            animation: none;
+        }
+
+        .bar.speaking {
+            animation: wave 0.5s ease-in-out infinite alternate;
+        }
+
+        @keyframes wave {
+            from { height: 10px; }
+            to { height: 40px; }
+        }
+
+        .bar:nth-child(1) { animation-delay: 0s; }
+        .bar:nth-child(2) { animation-delay: 0.1s; }
+        .bar:nth-child(3) { animation-delay: 0.2s; }
+        .bar:nth-child(4) { animation-delay: 0.3s; }
+        .bar:nth-child(5) { animation-delay: 0.4s; }
+
+        .timings-panel {
+            background: rgba(0,0,0,0.3);
+            border-radius: 12px;
+            padding: 15px;
+            margin-top: 20px;
+            font-family: 'Monaco', monospace;
+            font-size: 0.85em;
+        }
+
+        .timings-panel h3 {
+            margin-bottom: 10px;
+            color: #ff6b9d;
+        }
+
+        .timing-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .timing-row:last-child {
+            border-bottom: none;
+        }
+
+        .context-items {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 10px;
+        }
+
+        .context-item {
+            padding: 8px 12px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            font-size: 0.85em;
+        }
+
+        .context-item .speaker {
+            font-weight: 600;
+            color: #ff6b9d;
+        }
+
+        .context-item .time {
+            font-size: 0.8em;
+            opacity: 0.6;
+        }
+
+        .loading-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .loading-indicator.active {
+            opacity: 1;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255,107,157,0.3);
+            border-top-color: #ff6b9d;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .phase-indicator {
+            font-size: 0.85em;
+            color: #ff6b9d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Conversation Assistant</h1>
+            <div class="subtitle">Simple Mode: Complete LLM Response → Female Voice TTS</div>
+            <div class="status">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Connecting...</span>
+            </div>
+        </div>
+
+        <div class="context-info">
+            <h3>Conversation Context</h3>
+            <div id="contextCount">Loading...</div>
+            <div class="context-items" id="contextItems"></div>
+        </div>
+
+        <div class="chat-container" id="chatContainer">
+            <div class="message assistant">
+                <div class="sender">Assistant (Female Voice)</div>
+                <div class="text">Hello! I'm your conversation assistant. I'll respond with a complete answer first, then speak it in a female voice. Ask me anything!</div>
+            </div>
+        </div>
+
+        <div class="loading-indicator" id="loadingIndicator">
+            <div class="spinner"></div>
+            <span class="phase-indicator" id="phaseText">Thinking...</span>
+        </div>
+
+        <div class="audio-visualizer" id="audioVisualizer">
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+        </div>
+
+        <div class="input-area">
+            <input type="text" id="questionInput" placeholder="Ask a question..." autocomplete="off">
+            <button id="sendBtn" disabled>Send</button>
+        </div>
+
+        <div class="timings-panel" id="timingsPanel" style="display: none;">
+            <h3>Session Timings</h3>
+            <div id="timingsContent"></div>
+        </div>
+    </div>
+
+    <audio id="audioPlayer" autoplay></audio>
+
+    <script>
+        const WS_URL = 'ws://localhost:8772';
+        let ws = null;
+        let currentAudioElement = null;
+
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const questionInput = document.getElementById('questionInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const chatContainer = document.getElementById('chatContainer');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const audioVisualizer = document.getElementById('audioVisualizer');
+        const timingsPanel = document.getElementById('timingsPanel');
+        const timingsContent = document.getElementById('timingsContent');
+        const contextCount = document.getElementById('contextCount');
+        const contextItems = document.getElementById('contextItems');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const phaseText = document.getElementById('phaseText');
+
+        let currentMessageDiv = null;
+
+        function connect() {
+            ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => {
+                statusDot.classList.add('connected');
+                statusText.textContent = 'Connected';
+                sendBtn.disabled = false;
+                requestContext();
+            };
+
+            ws.onclose = () => {
+                statusDot.classList.remove('connected');
+                statusText.textContent = 'Disconnected';
+                sendBtn.disabled = true;
+                setTimeout(connect, 3000);
+            };
+
+            ws.onerror = (err) => {
+                console.error('WebSocket error:', err);
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleMessage(data);
+            };
+        }
+
+        function requestContext() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'context' }));
+            }
+        }
+
+        function handleMessage(data) {
+            switch (data.type) {
+                case 'start':
+                    addMessage('user', data.question);
+                    currentMessageDiv = addMessage('assistant', '');
+                    sendBtn.disabled = true;
+                    setLoading(true, 'Thinking...');
+                    break;
+
+                case 'llm_complete':
+                    updateMessageText(data.text);
+                    setLoading(true, 'Generating voice...');
+                    break;
+
+                case 'audio':
+                    playAudio(data.audio, data.text, data.timings);
+                    break;
+
+                case 'done':
+                    showTimings(data);
+                    sendBtn.disabled = false;
+                    break;
+
+                case 'context':
+                    displayContext(data.items);
+                    break;
+
+                case 'error':
+                    console.error('Server error:', data.message);
+                    addMessage('assistant', 'Sorry, an error occurred: ' + data.message);
+                    sendBtn.disabled = false;
+                    setLoading(false);
+                    break;
+            }
+        }
+
+        function addMessage(sender, text) {
+            const div = document.createElement('div');
+            div.className = `message ${sender}`;
+            div.innerHTML = `
+                <div class="sender">${sender === 'user' ? 'You' : 'Assistant (Female Voice)'}</div>
+                <div class="text">${escapeHtml(text)}</div>
+            `;
+            chatContainer.appendChild(div);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return div;
+        }
+
+        function updateMessageText(text) {
+            if (currentMessageDiv) {
+                currentMessageDiv.querySelector('.text').textContent = text;
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+        }
+
+        function setLoading(active, phase = '') {
+            if (active) {
+                loadingIndicator.classList.add('active');
+                if (phase) phaseText.textContent = phase;
+            } else {
+                loadingIndicator.classList.remove('active');
+            }
+        }
+
+        function playAudio(base64Audio, text, timings) {
+            const audioData = atob(base64Audio);
+            const arrayBuffer = new ArrayBuffer(audioData.length);
+            const view = new Uint8Array(arrayBuffer);
+            for (let i = 0; i < audioData.length; i++) {
+                view[i] = audioData.charCodeAt(i);
+            }
+
+            const blob = new Blob([arrayBuffer], { type: 'audio/wav' });
+            const url = URL.createObjectURL(blob);
+
+            audioPlayer.src = url;
+            audioVisualizer.querySelectorAll('.bar').forEach(bar => bar.classList.add('speaking'));
+            setLoading(false);
+
+            audioPlayer.onended = () => {
+                URL.revokeObjectURL(url);
+                audioVisualizer.querySelectorAll('.bar').forEach(bar => bar.classList.remove('speaking'));
+            };
+
+            audioPlayer.play().catch(err => console.error('Playback error:', err));
+        }
+
+        function showTimings(data) {
+            timingsPanel.style.display = 'block';
+
+            const timings = data.timings || {};
+            let html = '';
+
+            if (timings.llm_time_ms !== undefined) {
+                html += `
+                    <div class="timing-row">
+                        <span>LLM Response Time</span>
+                        <span>${timings.llm_time_ms.toFixed(0)}ms</span>
+                    </div>
+                `;
+            }
+            if (timings.tts_time_ms !== undefined) {
+                html += `
+                    <div class="timing-row">
+                        <span>TTS Generation Time</span>
+                        <span>${timings.tts_time_ms.toFixed(0)}ms</span>
+                    </div>
+                `;
+            }
+            if (timings.total_time_ms !== undefined) {
+                html += `
+                    <div class="timing-row" style="color: #10b981;">
+                        <span>Total Time</span>
+                        <span>${timings.total_time_ms.toFixed(0)}ms</span>
+                    </div>
+                `;
+            }
+
+            timingsContent.innerHTML = html;
+        }
+
+        function displayContext(items) {
+            contextCount.textContent = `${items.length} total messages`;
+            contextItems.innerHTML = items.map(item => `
+                <div class="context-item">
+                    <span class="speaker">${escapeHtml(item.speaker)}:</span>
+                    ${escapeHtml(item.text)}
+                    <div class="time">${item.time}</div>
+                </div>
+            `).join('');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        sendBtn.addEventListener('click', () => {
+            const question = questionInput.value.trim();
+            if (!question || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+            ws.send(JSON.stringify({
+                type: 'generate',
+                question: question
+            }));
+
+            questionInput.value = '';
+        });
+
+        questionInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendBtn.click();
+            }
+        });
+
+        // Start connection
+        connect();
+    </script>
+</body>
+</html>
